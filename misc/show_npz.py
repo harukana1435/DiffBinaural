@@ -1,7 +1,7 @@
 import numpy as np
 
 # npzファイルをロード
-file_path = 'your_file.npz'
+file_path = '/home/h-okano/DiffBinaural/processed_data/3d_mapping_npz/000003.mp4/000002.npz'
 data = np.load(file_path)
 
 # npzファイルの中身を確認（キーを表示）
