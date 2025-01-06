@@ -1,3 +1,6 @@
 [submodule "diffwave"]
 	path = diffwave
 	url = https://github.com/lmnt-com/diffwave.git
+[submodule "vocoder"]
+	path = vocoder
+	url = https://github.com/harukana1435/diffwave.git
