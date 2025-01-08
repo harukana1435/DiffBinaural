@@ -12,6 +12,7 @@ from PIL import Image
 import soundfile as sf
 import clip
 from . import video_transforms as vtransforms
+from librosa.filters import mel as librosa_mel_fn
 
 _, preprocess = clip.load("ViT-B/32", device="cuda")
 
@@ -20,62 +21,54 @@ class BaseDataset(torchdata.Dataset):
         # params
         self.num_frames = opt.num_frames
         self.stride_frames = opt.stride_frames
-        self.frameRate = opt.frameRate
+        self.vidRate = opt.vidRate #8 動画のフレームレート
         self.imgSize = opt.imgSize
         self.audRate = opt.audRate
-        self.audLen = opt.audLen
+        self.audLen = opt.audLen #65536 16000Hzで読み込む
         self.audSec = 1. * self.audLen / self.audRate
 
         # STFT params
         self.log_freq = opt.log_freq
         self.stft_frame = opt.stft_frame
         self.stft_hop = opt.stft_hop
+        self.fft_size = opt.stft_frame
+        self.num_mels = opt.num_mels
+        self.fmin = 0
+        self.fmax = opt.audRate//2
         self.HS = opt.stft_frame // 2 + 1
         self.WS = (self.audLen + 1) // self.stft_hop
+        
+        self.mel_basis_cache = {}  # mel_basis をキャッシュするための辞書
+        self.hann_window_cache = {}  # hann_window をキャッシュするための辞書
+
+        #ディレクトリ
+        self.dir_frames= opt.dir_frames
+        self.dir_pointcloud=opt.dir_pointcloud
 
         self.split = split
         self.seed = opt.seed
         random.seed(self.seed)
+        
 
         # initialize video transform
         self._init_vtransform()
 
         # list_sample can be a python list or a csv file of list
         if isinstance(list_sample, str):
-            # self.list_sample = [x.rstrip() for x in open(list_sample, 'r')]
-            self.list_sample = []
-            for row in csv.reader(open(list_sample, 'r'), delimiter=','):
-                if len(row) < 2:
-                    continue
-                self.list_sample.append(row)
+            self.list_sample = self.get_audio_filelist(list_sample)
+            
         elif isinstance(list_sample, list):
             self.list_sample = list_sample
         else:
             raise('Error list_sample!')
 
         if self.split == 'train':
-            self.list_sample *= opt.dup_trainset
+            self.list_sample *= opt.dup_trainset # デフォルトはdup_trainsetは5に設定してある
             random.shuffle(self.list_sample)
 
         if max_sample > 0:
             self.list_sample = self.list_sample[0:max_sample]
 
-        self.time_index = {}
-        
-        #今回はAVEを使わない
-        # if self.split == 'train':
-        #     ave_file = '/home/cxu-serve/p61/chuang65/AVE_Dataset/trainSet.txt'
-        # elif self.split == 'val':
-        #     ave_file = '/home/cxu-serve/p61/chuang65/AVE_Dataset/valSet.txt'
-        # else:
-        #     ave_file = '/home/cxu-serve/p61/chuang65/AVE_Dataset/valSet.txt'
-        
-        # with open(ave_file) as f:
-        #     Lines = f.readlines()
-        #     for item in Lines:
-        #         class_name, id, _, start, end = item.split('\n')[0].split('&')
-        #         self.time_index[id] = {"s":int(start), "e":int(end)}
-        
         num_sample = len(self.list_sample)
         assert num_sample > 0
         print('# samples: {}'.format(num_sample))
@@ -110,17 +103,27 @@ class BaseDataset(torchdata.Dataset):
 
         if self.split == 'train':
             self.img_transform = transforms.Compose([
-                transforms.Scale(int(self.imgSize)),
+                transforms.Resize(int(self.imgSize), InterpolationMode.BICUBIC),
                 #transforms.RandomCrop(self.imgSize),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std)])
         else:
             self.img_transform = transforms.Compose([
-                transforms.Scale(self.imgSize),
+                transforms.Resize(int(self.imgSize), InterpolationMode.BICUBIC),
                 transforms.CenterCrop(self.imgSize),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std)])
+
+
+    def get_audio_filelist(self, file):
+        # トレーニングデータのファイルを読み込む
+        with open(file, 'r', encoding='utf-8') as fi:
+            reader = csv.reader(fi)
+            next(reader)  # 1行目（カラム名）をスキップ
+            training_files = [row[0]  # Audio Pathの部分（1列目）
+                              for row in reader if len(row) > 0]
+        return training_files
 
     def _load_frames(self, paths):
         frames = []
@@ -128,6 +131,13 @@ class BaseDataset(torchdata.Dataset):
             frames.append(self._load_frame(path))
         frames = self.vid_transform(frames)
         return frames
+    
+    
+    def _load_pointclouds(self, paths):
+        pointclouds = []
+        for path in paths:
+            pointclouds.append(self._load_pointcloud(path))
+        return pointclouds
 
     def _load_frames_clip(self, paths):
         frames = []
@@ -165,6 +175,12 @@ class BaseDataset(torchdata.Dataset):
     def _load_frame(self, path):
         img = Image.open(path).convert('RGB')
         return img
+    
+    def _load_pointcloud(self, path):
+        pointcloud = np.load(path)
+        pointcloud = pointcloud["depth_map_3d"]
+        reshaped_pointcloud = pointcloud.reshape(-1, 3)
+        return reshaped_pointcloud
 
     def _stft(self, audio):
         spec = librosa.stft(
@@ -174,71 +190,28 @@ class BaseDataset(torchdata.Dataset):
         return torch.from_numpy(amp), torch.from_numpy(phase)
 
     def _load_audio_file(self, path):
-        if path.endswith('.mp3'):
-            audio_raw, rate = torchaudio.load(path)
-            audio_raw = audio_raw.numpy().astype(np.float32)
-
-            # range to [-1, 1]
-            audio_raw *= (2.0**-31)
-
-            # convert to mono
-            if audio_raw.shape[1] == 2:
-                audio_raw = (audio_raw[:, 0] + audio_raw[:, 1]) / 2
-            else:
-                audio_raw = audio_raw[:, 0]
-        else:
-            audio_raw, rate = librosa.load(path, sr=None, mono=True)
-            # audio_raw, rate = sf.read(path)
-            '''
-            audio_raw, rate = torchaudio.load(path)
-            if audio_raw.size(0)>1:
-                audio_raw = torch.mean(audio_raw, dim=0)
-            audio_raw = audio_raw.view(-1)
-            audio_raw = audio_raw.numpy().astype(np.float32)
-            '''
-
+        audio_raw, rate = librosa.load(path, sr=self.audRate, mono=False)
         return audio_raw, rate
 
-    def _load_audio(self, path, center_timestamp, nearest_resample=False):
-        audio = np.zeros(self.audLen, dtype=np.float32)
-
-        # silent
-        if path.endswith('silent'):
-            return audio
-
+    def _load_audio(self, path):
         # load audio
-        audio_raw, rate = self._load_audio_file(path)
+        audio, rate = self._load_audio_file(path)
 
         # resample
-        if rate > self.audRate:
-            # print('resmaple {}->{}'.format(rate, self.audRate))
-            if nearest_resample:
-                audio_raw = audio_raw[::rate//self.audRate]
-            else:
-                audio_raw = librosa.resample(audio_raw, rate, self.audRate)
-
+        if rate != self.audRate:
+            print('resmaple {}->{}'.format(rate, self.audRate))
+            audio = librosa.resample(audio, rate, self.audRate)
+        
         # repeat if audio is too short
-        if audio_raw.shape[0] < self.audRate * self.audSec:
-            n = int(self.audRate * self.audSec / audio_raw.shape[0]) + 1
-            audio_raw = np.tile(audio_raw, n)
+        if audio.shape[-1] < self.audLen:
+            audio = torch.nn.functional.pad(audio, (0, self.audLen - audio.shape[-1]), 'constant')
+            audio_start = 0
+        else:
+            max_audio_start = audio.shape[-1] - self.audLen
+            audio_start = random.randint(0, max_audio_start)
+            audio = audio[:, audio_start:audio_start+self.audLen]
 
-        # crop N seconds
-        len_raw = audio_raw.shape[0]
-        center = int(center_timestamp * self.audRate)
-        start = max(0, center - self.audLen // 2)
-        end = min(len_raw, center + self.audLen // 2)
-
-        audio[self.audLen//2-(center-start): self.audLen//2+(end-center)] = \
-            audio_raw[start:end]
-
-        # randomize volume
-        if self.split == 'train':
-            scale = random.random() + 0.5     # 0.5-1.5
-            audio *= scale
-        audio[audio > 1.] = 1.
-        audio[audio < -1.] = -1.
-
-        return audio
+        return audio, audio_start
 
     def _mix_n_and_stft(self, audios):
         N = len(audios)
@@ -274,3 +247,35 @@ class BaseDataset(torchdata.Dataset):
             audios[n] = torch.zeros(self.audLen)
             mags[n] = torch.zeros(1, self.HS, self.WS)
         return amp_mix, mags, frames, audios, phase_mix
+
+    def mel_spectrogram(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
+        # 入力の音声が-1〜1に収まっていない場合に警告
+        if torch.min(y) < -1.:
+            print('min value is ', torch.min(y))
+        if torch.max(y) > 1.:
+            print('max value is ', torch.max(y))
+
+        # mel_basis と hann_window をキャッシュから取得
+        mel_key = str(fmax) + '_' + str(y.device)
+        if mel_key not in self.mel_basis_cache:
+            mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
+            self.mel_basis_cache[mel_key] = torch.from_numpy(mel).float().to(y.device)
+        
+        if mel_key not in self.hann_window_cache:
+            self.hann_window_cache[mel_key] = torch.hann_window(win_size).to(y.device)
+
+        # 音声データをパッドする
+        y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft-hop_size)/2), int((n_fft-hop_size)/2)), mode='reflect')
+        y = y.squeeze(1)
+
+        # STFTを計算する
+        spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=self.hann_window_cache[mel_key],
+                          center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
+
+        # 複素数の絶対値を計算する
+        spec = torch.sqrt(spec.pow(2).sum(-1) + (1e-9))
+
+        # メルスペクトログラムを計算する
+        spec = torch.matmul(self.mel_basis_cache[mel_key], spec)
+
+        return spec

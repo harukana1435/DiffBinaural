@@ -4,3 +4,12 @@
 [submodule "vocoder"]
 	path = vocoder
 	url = https://github.com/harukana1435/diffwave.git
+[submodule "hifi-gan"]
+	path = hifi-gan
+	url = https://github.com/harukana1435/hifi-gan.git
+[submodule "learning3d"]
+	path = learning3d
+	url = https://github.com/harukana1435/learning3d.git
+[submodule "pointnet"]
+	path = pointnet
+	url = https://github.com/harukana1435/pointnet.git
