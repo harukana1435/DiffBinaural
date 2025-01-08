@@ -17,7 +17,7 @@ class ArgParser(object):
                             help="weights to finetune unet")
         parser.add_argument('--num_channels', default=32, type=int,
                             help='number of channels')
-        parser.add_argument('--num_frames', default=1, type=int,
+        parser.add_argument('--num_frames', default=10, type=int,
                             help='number of frames')
         parser.add_argument('--stride_frames', default=1, type=int,
                             help='sampling stride of frames')
@@ -46,18 +46,21 @@ class ArgParser(object):
         parser.add_argument('--num_vis', default=40, type=int,
                             help='number of images to evalutate')
 
-        parser.add_argument('--audLen', default=65535, type=int,
+        parser.add_argument('--audLen', default=65536, type=int,
                             help='sound length')
-        parser.add_argument('--audRate', default=11025, type=int,
+        parser.add_argument('--audRate', default=16000, type=int,
                             help='sound sampling rate')
-        parser.add_argument('--stft_frame', default=1022, type=int,
+        parser.add_argument('--stft_frame', default=1024, type=int,
                             help="stft frame length")
         parser.add_argument('--stft_hop', default=256, type=int,
                             help="stft hop length")
-
+        parser.add_argument('--num_mels', default=256, type=int,
+                            help="number of mels")
+        
+        
         parser.add_argument('--imgSize', default=224, type=int,
                             help='size of input frame')
-        parser.add_argument('--frameRate', default=8, type=float,
+        parser.add_argument('--vidRate', default=8, type=float,
                             help='video frame sampling rate')
 
         # Misc arguments
@@ -73,6 +76,12 @@ class ArgParser(object):
                             help='steps for forward process')
         parser.add_argument('--num_sample_timesteps', type=int, default=300,
                             help='steps for backward process')
+        
+        # ディレクトリ auguments
+        parser.add_argument('--dir_pointcloud', type=str, default="/home/h-okano/DiffBinaural/processed_data/pointcloud",
+                            help='the directory for pointcloud npz')
+        parser.add_argument('--dir_frames', type=str, default="/home/h-okano/DiffBinaural/FairPlay/frames",
+                            help='the directory for frames')
 
         self.parser = parser
 

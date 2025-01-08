@@ -17,13 +17,13 @@ OPTS+="--log_freq 1 "
 
 # frames-related
 OPTS+="--arch_frame clip " # [resnet18, clip]
-OPTS+="--num_frames 11 " #特徴量としてどれくらい画像を使うか
+OPTS+="--num_frames 10 " #特徴量としてどれくらい画像を使うか
 OPTS+="--stride_frames 2 " #どれくらい画像の感覚を開けるか
-OPTS+="--frameRate 8 " #動画のfps
+OPTS+="--vidRate 8 " #動画のfps
 
 # audio-related
-OPTS+="--audLen 65535 " # 65535
-OPTS+="--audRate 11025 " #11025
+OPTS+="--audLen 65536 " # 65535
+OPTS+="--audRate 16000 " #11025
 
 # learning params
 OPTS+="--num_gpus 1 "

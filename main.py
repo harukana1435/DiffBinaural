@@ -44,53 +44,40 @@ class NetWrapper(torch.nn.Module):
         self.scale_factor = 0.15
 
     def forward(self, batch_data, args, t):
-        mag_mix = batch_data['mag_mix']
-        mags = batch_data['mags']
+        mix_mel = batch_data['mix_mel']
+        diff_mel = batch_data['diff_mel']
         frames = batch_data['frames']
-        mag_mix = mag_mix + 1e-10
+        pointclouds = batch_data['pointclouds']
 
-        N = args.num_mix
-        B = mag_mix.size(0)
-        T = mag_mix.size(3)
-
-        # 0.0 warp the spectrogram
-        if args.log_freq:
-            grid_warp = torch.from_numpy(
-                warpgrid(B, 256, T, warp=True)).to(args.device)
-            mag_mix = F.grid_sample(mag_mix, grid_warp, align_corners=True)
-            for n in range(N):
-                mags[n] = F.grid_sample(mags[n].float(), grid_warp, align_corners=True)
+        B = mix_mel.size(0)
+        T = mix_mel.size(2)
 
         if args.weighted_loss:
-            weight = torch.log1p(mag_mix)
+            weight = mix_mel
             # weight = torch.clamp(weight, 1e-3, 10)
             weight = weight > 1e-3
         else:
-            weight = torch.ones_like(mag_mix)
+            weight = torch.ones_like(mix_mel)
 
         # LOG magnitude
-        log_mag_mix = torch.log1p(mag_mix) * self.scale_factor
-        log_mag0 = torch.log1p(mags[0]) * self.scale_factor
-        log_mag2 = torch.log1p(mags[1]) * self.scale_factor
-        log_mag_mix.clamp_(0., 1.)
-        log_mag0.clamp_(0., 1.)
-        log_mag2.clamp_(0., 1.)
-        # detach        
+        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor
+        log_diff_mel = torch.log1p(diff_mel) * self.scale_factor
+        #log_mix_mel.clamp_(0., 1.)
+        #log_diff_mel.clamp_(0., 1.)
+        # detach
         log_mag_mix = log_mag_mix.detach()
-        log_mag0 = log_mag0.detach()
-        log_mag2 = log_mag2.detach()
+        log_diff_mel = log_diff_mel.detach()
 
         # Frame feature (conditions)
-        feat_frames = [None for n in range(N)]
-        for n in range(N):
-            feat_frames[n] = self.net_frame.forward_multiframe(frames[n], pool=False)
+        feat_frames = self.net_frame.forward_multiframe(frames, pool=False)
+        
 
         # Loss
-        loss_sep = 1e3*self.sampler(log_mag0, [log_mag_mix, feat_frames[0]], log=False, weight=weight) + 1e3*self.sampler(log_mag2, [log_mag_mix, feat_frames[1]], log=False, weight=weight) 
+        loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight)
 
-        return loss_sep
+        return loss_mel
 
-    def sample(self, batch_data, args):
+    def sample(self, batch_data, args): #サンプルのときは最後に、hifiganに入れられるように正規化しないといけないが、hifigan側でやったほうがいいかも
         mag_mix = batch_data['mag_mix']
         mags = batch_data['mags']
         frames = batch_data['frames']
