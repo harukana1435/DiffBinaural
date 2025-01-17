@@ -525,7 +525,7 @@ class Unet(nn.Module):
         # determine dimensions
 
         self.channels = channels # 1
-        self.self_condition = self_condition # falseで確定 self_conditionをtrueにした方がいいかもね
+        self.self_condition = self_condition #  Trueで確定
         input_channels = channels * (2 if self_condition else 1) # 入力は2つのスペクトログラムだから
 
         init_dim = default(init_dim, dim) #init_dimが定義されてないので、64となっている
@@ -571,7 +571,7 @@ class Unet(nn.Module):
             self.downs.append(nn.ModuleList([
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim), # 64, 64, 256
                 Residual(PreNorm(dim_in, LinearAttention(dim_in, time_emb_dim = time_dim))), # 64 256
-                Residual(TimeAttention(dim_in, n_freqs=N_freqs[ind], time_emb_dim = time_dim)),
+                #Residual(TimeAttention(dim_in, n_freqs=N_freqs[ind], time_emb_dim = time_dim)),
                 Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1)
             ]))
 
@@ -589,7 +589,7 @@ class Unet(nn.Module):
             self.ups.append(nn.ModuleList([
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
                 Residual(PreNorm(dim_out, LinearAttention(dim_out, time_emb_dim = time_dim))),
-                Residual(TimeAttention(dim_out, n_freqs=N_freqs[(len(in_out) - 1) - ind], time_emb_dim = time_dim)),
+                #Residual(TimeAttention(dim_out, n_freqs=N_freqs[(len(in_out) - 1) - ind], time_emb_dim = time_dim)),
                 Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
             ]))
 
@@ -621,11 +621,19 @@ class Unet(nn.Module):
         h = []
 
         # baseline
-        for block1, block2, attn, downsample in self.downs:
+        # for block1, block2, attn, downsample in self.downs:
+        #     x = block1(x, c)
+
+        #     x = block2(x, time_emb=c)
+        #     x = attn(x, time_emb=c)
+        #     h.append(x)
+
+        #     x = downsample(x)
+            
+        for block1, block2, downsample in self.downs:
             x = block1(x, c)
 
             x = block2(x, time_emb=c)
-            x = attn(x, time_emb=c)
             h.append(x)
 
             x = downsample(x)
@@ -641,15 +649,23 @@ class Unet(nn.Module):
         x = self.mid_attn(x, time_emb=None)
         x = self.mid_block2(x, None)
 
-        # baseline 
-        for block1, block2, attn, upsample in self.ups:
+        # # baseline 
+        # for block1, block2, attn, upsample in self.ups:
+        #     x = torch.cat((x, h.pop()), dim = 1)
+        #     x = block1(x, c)
+
+        #     x = block2(x, time_emb=c)
+        #     x = attn(x, time_emb=c)
+
+        #     x = upsample(x)
+            
+        for block1, block2, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim = 1)
             x = block1(x, c)
 
             x = block2(x, time_emb=c)
-            x = attn(x, time_emb=c)
 
-            x = upsample(x)
+            x = upsample(x)    
 
         x = torch.cat((x, r), dim = 1)
 

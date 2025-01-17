@@ -1,0 +1,121 @@
+import os
+import numpy as np
+import cv2
+import open3d as o3d
+
+import numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn.metrics import pairwise_distances_argmin_min
+
+def get_highest_density_cluster_centroid(points):
+    """
+    3次元点群データをクラスタリングし、最も密度が高いクラスタの重心を計算します。
+    
+    Parameters:
+        points (numpy.ndarray): (H, W, 3) の形状の3次元点群データ。
+        
+    Returns:
+        numpy.ndarray: 最も密度の高いクラスタの重心 (3次元ベクトル)。
+        numpy.ndarray: 各クラスタのラベル。
+    """
+    # 点群データを (N, 3) に変換 (H, W, 3) -> (N, 3)
+    H, W, _ = points.shape
+    reshaped_points = points.reshape(-1, 3)
+
+    # DBSCAN クラスタリング
+    dbscan = DBSCAN(eps=0.1, min_samples=200)
+    labels = dbscan.fit_predict(reshaped_points)
+
+    # 有効なクラスタ (ノイズでないクラスタ) のインデックス
+    unique_labels = np.unique(labels)
+    valid_clusters = unique_labels[unique_labels != -1]
+
+    # クラスタごとに密度を計算 (点数で比較)
+    cluster_densities = {label: np.sum(labels == label) for label in valid_clusters}
+    print(cluster_densities)
+
+    # 最も密度の高いクラスタのラベル
+    if not cluster_densities:
+        raise ValueError("有効なクラスタが見つかりませんでした。")
+    highest_density_label = max(cluster_densities, key=cluster_densities.get)
+
+    # 該当クラスタの点を取得
+    cluster_points = reshaped_points[labels == highest_density_label]
+
+    # 重心を計算
+    centroid = np.mean(cluster_points, axis=0)
+
+    return cluster_points, centroid
+
+
+
+def extract_combined_pointcloud_to_ply(image_path, pointcloud_path, bbox_path, output_ply_path):
+    """
+    画像と3次元座標データを基に、すべてのバウンディングボックス領域を切り取り、
+    統合した点群データを生成し、PLY形式で保存します。
+
+    Args:
+        image_path (str): 入力画像のパス。
+        pointcloud_path (str): 入力3次元座標データのパス。
+        bbox_path (str): バウンディングボックス情報のファイルパス (.npy)。
+        output_ply_path (str): 点群データの出力パス (.ply)。
+    """
+    # データ読み込み
+    image = cv2.imread(image_path)  # (H, W, 3) の画像
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    pointcloud = np.load(pointcloud_path)['depth_map_3d']  # (H, W, 3) の3次元座標
+    bbox_data = np.load(bbox_path, allow_pickle=True).item()
+    print(bbox_data)
+
+    bounding_boxes = bbox_data['bounding_boxes']  # バウンディングボックス (N, 4)
+    labels = bbox_data['labels']                 # ラベル情報 (N,)
+    scores = bbox_data['scores']                 # スコア (N,)
+
+    combined_points = []  # 統合された点群データ
+    combined_colors = []  # 統合された色情報
+
+    # 各バウンディングボックスで処理
+    for bbox in bounding_boxes:
+        x1, y1, x2, y2 = bbox
+
+        # バウンディングボックス領域を切り取り
+        cropped_image = image[y1:y2, x1:x2]                # 切り取った画像
+        cropped_pointcloud = pointcloud[y1:y2, x1:x2, :]  # 切り取った3次元座標
+
+        cropped_pointcloud, _ = get_highest_density_cluster_centroid(cropped_pointcloud)
+        print(_)
+
+        points = cropped_pointcloud.reshape(-1, 3)
+        points = _.reshape(-1, 3)
+
+        # 色データ (R, G, B)
+        colors = cropped_image.reshape(-1, 3) / 255.0  # 0-1 に正規化
+
+        # 統合
+        combined_points.append(points)
+        combined_colors.append(colors)
+        
+
+    # 統合データを1つの配列にまとめる
+    combined_points = np.vstack(combined_points)
+    combined_colors = np.vstack(combined_colors)
+
+    # Open3D 点群オブジェクトを作成
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(combined_points)
+    pcd.colors = o3d.utility.Vector3dVector(combined_colors)
+    # 点群の座標系を調整
+    pcd.transform([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+
+    # PLYファイルに保存
+    o3d.io.write_point_cloud(output_ply_path, pcd)
+    print(f"Point cloud saved to {output_ply_path}")
+
+# 実行例
+if __name__ == "__main__":
+    image_path = "/home/h-okano/DiffBinaural/FairPlay/frames/000014.mp4/000060.jpg"
+    pointcloud_path = "/home/h-okano/DiffBinaural/processed_data/pointcloud/000014.mp4/000060.npz"
+    bbox_path = "/home/h-okano/DiffBinaural/processed_data/det_npy/000014.npy"
+    output_ply_path = "/home/h-okano/DiffBinaural/misc/temp/combined_pointcloud.ply"
+
+    extract_combined_pointcloud_to_ply(image_path, pointcloud_path, bbox_path, output_ply_path)

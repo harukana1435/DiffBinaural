@@ -42,7 +42,7 @@ def unnormalize_to_zero_to_one(t):
 
 # gaussian diffusion trainer class
 
-def extract(a, t, x_shape):
+def extract(a, t, x_shape): #aの中から最後の次元のうち、t番目の次元を取り出して、outにブロードキャストできるように格納
     b, *_ = t.shape
     out = a.gather(-1, t)
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))
@@ -110,7 +110,7 @@ class GaussianDiffusion(nn.Module):
         p2_loss_weight_gamma = 0., # p2 loss weight, from https://arxiv.org/abs/2204.00227 - 0 is equivalent to weight of 1 across time - 1. is recommended
         p2_loss_weight_k = 1,
         ddim_sampling_eta = 0.,
-        auto_normalize = True,
+        auto_normalize = True,#Falseになってる
         min_snr_loss_weight = False, # https://arxiv.org/abs/2303.09556
         min_snr_gamma = 5
     ):
@@ -425,9 +425,9 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f'invalid loss type {self.loss_type}')
 
-    def p_losses(self, x_start, t, condition, noise = None, log=False, weight = None, cfg = False, threshold = 0.1):
+    def p_losses(self, x_start, t, condition, noise = None, log=False, weight = None, cfg = False, threshold = 0.1): #ここでnoiseもlogもどっちも無し
         b, c, h, w = x_start.shape
-        noise = default(noise, lambda: torch.randn_like(x_start))
+        noise = default(noise, lambda: torch.randn_like(x_start)) #x_startと同じ形でランダムなやつ
 
         # noise sample
 
@@ -437,11 +437,11 @@ class GaussianDiffusion(nn.Module):
         x_self_cond = None
         if self.self_condition and random() < 0.5:
             with torch.no_grad():
-                x_self_cond = self.model_predimodelctions(x, t).pred_x_start
-                x_self_cond.detach_()
+                x_self_cond = self.model_predictions(x, t).pred_x_start
+                x_self_cond.detach()
 
         # classifer free guidance
-        if cfg:
+        if cfg: #条件を時々なしにする
             mix, visual_feature = condition
             idx = torch.where(torch.rand(b) < threshold)
             mix[idx] = 0
@@ -474,7 +474,7 @@ class GaussianDiffusion(nn.Module):
     def forward(self, img, condition, *args, **kwargs):
         b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
         assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
-        t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        t = torch.randint(0, self.num_timesteps, (b,), device=device).long() #ランダムでtを選ぶ
 
         img = self.normalize(img)
         return self.p_losses(img, t, condition, *args, **kwargs)

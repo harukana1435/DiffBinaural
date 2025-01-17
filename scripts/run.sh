@@ -22,28 +22,29 @@ OPTS+="--stride_frames 2 " #どれくらい画像の感覚を開けるか
 OPTS+="--vidRate 8 " #動画のfps
 
 # audio-related
-OPTS+="--audLen 65536 " # 65535
+OPTS+="--audLen 16384 " # 65535
 OPTS+="--audRate 16000 " #11025
+OPTS+="--num_mels 64 "
 
 # learning params
 OPTS+="--num_gpus 1 "
-OPTS+="--gpu_ids 6 "
-OPTS+="--workers 8 "
-OPTS+="--batch_size_per_gpu 4 "
+OPTS+="--gpu_ids 5 "
+OPTS+="--workers 20 "
+OPTS+="--batch_size_per_gpu 64 "
 OPTS+="--lr_frame 1e-4 " #1e-4
 OPTS+="--lr_unet 1e-4 " #1e-4
 OPTS+="--num_epoch 400 "
 OPTS+="--lr_steps 100 200 300 "
-OPTS+="--dup_trainset 5 "
+OPTS+="--dup_trainset 4 "
 OPTS+="--eval_epoch 1 "
 
 # where to save the results
-OPTS+="--ckpt /home/h-okano/DAVIS/checkpoints "
+OPTS+="--ckpt /home/h-okano/DiffBinaural/checkpoints "
 
 # display, viz
 OPTS+="--disp_iter 200 "
-OPTS+="--num_vis 80 "
-OPTS+="--num_val 80 " #どれくらい検証データとして使うかを表す
+OPTS+="--num_vis 2 "
+OPTS+="--num_val 20 " #どれくらい検証データとして使うかを表す
 
 OPTS+="--split val "
 OPTS+="--mode train"

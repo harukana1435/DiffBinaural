@@ -9,7 +9,7 @@ def display_npy_file(npy_file_path):
         return
 
     # .npyファイルをロード
-    data = np.load(npy_file_path)
+    data = np.load(npy_file_path, allow_pickle=True)
     print(data)
     print(f"Loaded .npy file: {npy_file_path}")
     print(f"Shape: {data.shape}")
@@ -28,5 +28,5 @@ def display_npy_file(npy_file_path):
 # サンプル使用方法
 if __name__ == "__main__":
     # 表示したい .npy ファイルのパス
-    npy_file_path = "/home/h-okano/DiffBinaural/processed_data/melspec_diff/000001_mel_diff.npy"
+    npy_file_path = "/home/h-okano/DiffBinaural/processed_data/det_npy/001629.npy"
     display_npy_file(npy_file_path)

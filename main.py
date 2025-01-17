@@ -14,15 +14,19 @@ import scipy.io.wavfile as wavfile
 from imageio import imwrite as imsave
 from mir_eval.separation import bss_eval_sources
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 # Our libs
-from arguments import ArgParser
+from utils.arguments import ArgParser
 from dataset import FairPlayDataset
 from modules import models
 from diffusion_utils import diffusion_pytorch
-from utils import AverageMeter, magnitude2heatmap, \
+from utils.helpers import AverageMeter, magnitude2heatmap, \
     istft_reconstruction, warpgrid, makedirs
 import warnings
+# UserWarningとFutureWarningを無視する
+#warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
+
 
 # Network wrapper, defines forward pass
 class NetWrapper(torch.nn.Module):
@@ -31,7 +35,7 @@ class NetWrapper(torch.nn.Module):
         self.net_frame, self.net = nets
         self.sampler = diffusion_pytorch.GaussianDiffusion(
             self.net,
-            image_size = 256,
+            image_size = 64,
             timesteps = 1000,   # number of steps
             sampling_timesteps = 15, # if ddim else None
             loss_type = 'l1',    # L1 or L2
@@ -42,6 +46,24 @@ class NetWrapper(torch.nn.Module):
             min_snr_loss_weight=False
         )
         self.scale_factor = 0.15
+
+    def move_to_device(self, device):
+            """
+            モジュール全体と内包モジュールを指定デバイスに移動する。
+
+            Args:
+                device (torch.device): 移動先のデバイス。
+            """
+            self.to(device)
+            if hasattr(self.net_frame, "to"):
+                self.net_frame.to(device)
+            if hasattr(self.net, "to"):
+                self.net.to(device)
+            if hasattr(self.sampler, "to"):
+                self.sampler.to(device)  # diffusion_pytorch.GaussianDiffusion も移動可能なら移動
+
+            print(f"NetWrapper and its components moved to {device}")
+
 
     def forward(self, batch_data, args, t):
         mix_mel = batch_data['mix_mel']
@@ -65,17 +87,17 @@ class NetWrapper(torch.nn.Module):
         #log_mix_mel.clamp_(0., 1.)
         #log_diff_mel.clamp_(0., 1.)
         # detach
-        log_mag_mix = log_mag_mix.detach()
+        log_mix_mel = log_mix_mel.detach()
         log_diff_mel = log_diff_mel.detach()
 
         # Frame feature (conditions)
         feat_frames = self.net_frame.forward_multiframe(frames, pool=False)
         
-
         # Loss
-        loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight)
+        loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
 
         return loss_mel
+
 
     def sample(self, batch_data, args): #サンプルのときは最後に、hifiganに入れられるように正規化しないといけないが、hifigan側でやったほうがいいかも
         mag_mix = batch_data['mag_mix']
@@ -106,6 +128,7 @@ class NetWrapper(torch.nn.Module):
         log_mag_mix = log_mag_mix.detach()
         log_mag0 = log_mag0.detach()
         log_mag2 = log_mag2.detach()
+        
 
         # Frame feature (conditions)
         feat_frames = [None for n in range(N)]
@@ -129,6 +152,7 @@ class NetWrapper(torch.nn.Module):
         pred_mags[1] = X1_pred 
 
         return {'pred_mags': pred_mags, 'mag_mix': mag_mix, 'mags': mags}
+
 
 
 SDR_pred = []
@@ -342,7 +366,7 @@ def train(netWrapper, loader, optimizer, history, epoch, args, writer, running_l
     torch.cuda.synchronize()
     tic = time.perf_counter()
 
-    for i, batch_data in enumerate(loader):
+    for i, batch_data in enumerate(tqdm(loader, desc="Training Progress", ncols=100)):
         # measure data time
         torch.cuda.synchronize()
         data_time.update(time.perf_counter() - tic)
@@ -446,9 +470,8 @@ def main(args):
     loader_val = torch.utils.data.DataLoader(
         dataset_val,
         batch_size=args.batch_size,
-        # batch_size=1,
         shuffle=False,
-        num_workers=2,
+        num_workers=int(args.workers), #元々は2だった
         drop_last=False)
 
     args.epoch_iters = len(dataset_train) // args.batch_size
@@ -457,10 +480,17 @@ def main(args):
     writer = SummaryWriter(f'{args.ckpt}/runs')
     args.writer = writer
 
-    # Wrap networks
+    # Wrap networks for multiple GPUs
     netWrapper = NetWrapper(nets)
-    netWrapper = torch.nn.DataParallel(netWrapper)
-    netWrapper.to(args.device)
+
+    print(f"Using {len(args.gpu_ids)} GPUs: {args.gpu_ids}")
+        
+    netWrapper.move_to_device(args.device)  # モデルをデバイスに移動
+    netWrapper = torch.nn.DataParallel(netWrapper, device_ids=args.gpu_ids)  # ラップ
+    # モデルの最初のパラメータのデバイスを確認
+    model_device = next(netWrapper.module.net.parameters()).device
+    print(f"The model is on device: {model_device}")
+
 
     # Set up optimizer
     optimizer = create_optimizer(nets, args)
@@ -468,7 +498,7 @@ def main(args):
     # History of peroformance
     history = {
         'train': {'epoch': [], 'err': []},
-        'val': {'epoch': [], 'sdr': [], 'sir': [], 'sar': []}}
+        'val': {'epoch': [], 'err': [], 'mel': []}}
 
     # Eval mode
     if args.mode == 'eval':
@@ -505,7 +535,10 @@ if __name__ == '__main__':
     parser = ArgParser()
     args = parser.parse_train_arguments()
     args.batch_size = args.num_gpus * args.batch_size_per_gpu
-    args.device = torch.device("cuda")
+    args.gpu_ids = [int(gpu_id) for gpu_id in args.gpu_ids.split(",")]
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu_ids))  # 設定
+    torch.cuda.set_device(args.gpu_ids[0])  # 明示的にデバイスを設定
+    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # experiment name
     if args.mode == 'train' or args.mode == 'eval':
@@ -534,7 +567,6 @@ if __name__ == '__main__':
     args.best_sdr = -float("inf")
     args.testing = False
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_ids
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)

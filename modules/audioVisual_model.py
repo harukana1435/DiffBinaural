@@ -19,7 +19,7 @@ class AudioVisualModel(torch.nn.Module):
         self.channels = input_nc
 
         # 2D
-        self.net_unet = Unet(dim=self.dim, out_dim=self.out_dim, channels=self.channels, self_condition=True)
+        self.net_unet = Unet(dim=self.dim, out_dim=self.out_dim, channels=self.channels, self_condition=True) #64, 1, 1, True
 
         # time mlp
         time_dim = dim * 4
