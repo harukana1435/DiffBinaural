@@ -41,6 +41,7 @@ class FairPlayDataset(BaseDataset):
         try:
             # 音声の抽出
             audio, start_point = self._load_audio(audio_path)
+            audio = torch.FloatTensor(audio)
         except Exception as e:
             print(f"Error loading audio for basename: {basename}")
             print(f"Details: {e}")
@@ -81,7 +82,9 @@ class FairPlayDataset(BaseDataset):
         frame_indices = np.linspace(start_frame, end_frame, self.num_frames, dtype=int)
         even_frame_indices = []
         for idx in frame_indices:
-            if idx % 2 == 0:
+            if idx == 0:
+                even_frame_indices.append(idx+2)
+            elif idx % 2 == 0:
                 even_frame_indices.append(idx)
             else:
                 even_frame_indices.append(idx - 1 if idx > 1 else 2)  # 偶数に丸める

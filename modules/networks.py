@@ -32,6 +32,7 @@ class Resnet(nn.Module):
         self.pool_type = pool_type
         self.features = nn.Sequential(
             *list(original_resnet.children())[:-1])
+
         for param in self.features.parameters():
             param.requires_grad = False
 
@@ -84,6 +85,7 @@ class Clip(nn.Module):
         super(Clip, self).__init__()
         self.pool_type = pool_type
         self.model = model
+        #print(*list(model.children()))
         for param in self.model.parameters():
             param.requires_grad = False
         
@@ -110,15 +112,15 @@ class Clip(nn.Module):
         (B, C, T, H, W) = x.size()
         x = x.permute(0, 2, 1, 3, 4).contiguous()
         x = x.view(B * T, C, H, W)
-
+        
         x = self.model.encode_image(x)
 
         (_, C) = x.size()
-        x = x.view(B, T, C).transpose(1,2)
+        x = x.view(B, T, C)
 
         # transformer
         # x = self.temporal_transformer(x.transpose(1,2)).transpose(1,2)
-        x = self.temporal_transformer(x.transpose(1,2), x.transpose(1,2)).transpose(1,2)
+        x = self.temporal_transformer(x, x).transpose(1,2) #(B, C, T)
         
         if not pool:
             return x

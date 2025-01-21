@@ -225,7 +225,7 @@ if __name__ == '__main__':
     save_path = '/home/h-okano/DiffBinaural/processed_data'
     args = {
         'audio_sample_rate': 16000,
-        'audio_num_mel_bins':80,
+        'audio_num_mel_bins':64,
         'fft_size': 1024,
         'win_size': 1024,
         'hop_size': 256,

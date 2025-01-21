@@ -20,7 +20,6 @@ class BaseDataset(torchdata.Dataset):
     def __init__(self, list_sample, opt, max_sample=-1, split='train'):
         # params
         self.num_frames = opt.num_frames
-        self.stride_frames = opt.stride_frames
         self.vidRate = opt.vidRate #8 動画のフレームレート
         self.imgSize = opt.imgSize
         self.audRate = opt.audRate
@@ -129,7 +128,7 @@ class BaseDataset(torchdata.Dataset):
         frames = []
         for path in paths:
             frames.append(self._load_frame(path))
-        frames = self.vid_transform(frames)
+        frames = self.vid_transform(frames) #(B, L, C, H, W)
         return frames
     
     
