@@ -28,5 +28,5 @@ def display_npy_file(npy_file_path):
 # サンプル使用方法
 if __name__ == "__main__":
     # 表示したい .npy ファイルのパス
-    npy_file_path = "/home/h-okano/DiffBinaural/processed_data/det_npy/001629.npy"
+    npy_file_path = "/home/h-okano/DiffBinaural/processed_data/det_npy/001750.npy"
     display_npy_file(npy_file_path)

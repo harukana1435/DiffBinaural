@@ -18,8 +18,6 @@ class ArgParser(object):
                             help='number of channels')
         parser.add_argument('--num_frames', default=1, type=int,
                             help='number of frames')
-        parser.add_argument('--stride_frames', default=1, type=int,
-                            help='sampling stride of frames')
         parser.add_argument('--img_pool', default='maxpool',
                             help="avg or max pool image features")
         parser.add_argument('--loss', default='l1',

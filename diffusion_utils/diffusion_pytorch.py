@@ -42,10 +42,10 @@ def unnormalize_to_zero_to_one(t):
 
 # gaussian diffusion trainer class
 
-def extract(a, t, x_shape): #aの中から最後の次元のうち、t番目の次元を取り出して、outにブロードキャストできるように格納
+def extract(a, t, x_shape): #aの中から最後の次元のうち、t番目の次元を取り出して、x_shapeにブロードキャストできるように格納
     b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+    out = a.gather(-1, t) #1引数の軸に沿って、tに格納された値の要素をaから抜き出す。
+    return out.reshape(b, *((1,) * (len(x_shape) - 1))) #x_shapeの長さ-1を(1,)にかけて、最後に*でアンパックする
 
 def linear_beta_schedule(timesteps):
     """
@@ -74,7 +74,7 @@ def cosine_beta_schedule(timesteps, s = 0.008):
     """
     steps = timesteps + 1
     t = torch.linspace(0, timesteps, steps, dtype = torch.float64) / timesteps
-    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2 #cosが0からπ/2までをtimestepsずつの割合で格納していく
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return torch.clip(betas, 0, 0.999)
@@ -109,7 +109,7 @@ class GaussianDiffusion(nn.Module):
         schedule_fn_kwargs = dict(),
         p2_loss_weight_gamma = 0., # p2 loss weight, from https://arxiv.org/abs/2204.00227 - 0 is equivalent to weight of 1 across time - 1. is recommended
         p2_loss_weight_k = 1,
-        ddim_sampling_eta = 0.,
+        ddim_sampling_eta = 0., #これが1になっている
         auto_normalize = True,#Falseになってる
         min_snr_loss_weight = False, # https://arxiv.org/abs/2303.09556
         min_snr_gamma = 5
@@ -155,7 +155,7 @@ class GaussianDiffusion(nn.Module):
 
         # helper function to register buffer from float64 to float32
 
-        register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
+        register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32)) #テンソルをバッファにする。バッファとはmodel.state_dict()に保存されるが、購買を計算するテンソルじゃない
 
         register_buffer('betas', betas)
         register_buffer('alphas_cumprod', alphas_cumprod)
@@ -171,7 +171,7 @@ class GaussianDiffusion(nn.Module):
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
 
-        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod) #alphas_cumprodはいままでどれくらいがのこっているか、1-alphasはどれくらいノイズがあるか 1-prev 1個前にどれくらいノイズアあるか
+        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod) #1-alphas_cumprod/1-alphas_cumprod_prevはbetaを示すが、どれくらいの重みをかけたら本当にそのbetasになるか　alphas_cumprodはいままでどれくらいがのこっているか、1-alphasはどれくらいノイズがあるか 1-prev 1個前にどれくらいノイズアあるか
 
         # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
 
@@ -186,6 +186,7 @@ class GaussianDiffusion(nn.Module):
         # derive loss weight
         # snr - signal noise ratio
 
+        #min_snr_loss_weightが0奈良ここら辺は使わない　つまり使わない
         snr = alphas_cumprod / (1 - alphas_cumprod)
 
         # https://arxiv.org/abs/2303.09556
@@ -203,11 +204,11 @@ class GaussianDiffusion(nn.Module):
 
         # calculate p2 reweighting
 
-        register_buffer('p2_loss_weight', (p2_loss_weight_k + alphas_cumprod / (1 - alphas_cumprod)) ** -p2_loss_weight_gamma)
+        register_buffer('p2_loss_weight', (p2_loss_weight_k + alphas_cumprod / (1 - alphas_cumprod)) ** -p2_loss_weight_gamma) #p2_loss_weight_gammaが0だから1になる。
 
         # auto-normalization of data [0, 1] -> [-1, 1] - can turn off by setting it to be False
 
-        self.normalize = normalize_to_neg_one_to_one if auto_normalize else identity
+        self.normalize = normalize_to_neg_one_to_one if auto_normalize else identity #ここはauto_nomalizeが0なので関係ない
         self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else identity
 
     def predict_start_from_noise(self, x_t, t, noise):
@@ -425,7 +426,7 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f'invalid loss type {self.loss_type}')
 
-    def p_losses(self, x_start, t, condition, noise = None, log=False, weight = None, cfg = False, threshold = 0.1): #ここでnoiseもlogもどっちも無し
+    def p_losses(self, x_start, t, condition, noise = None, log=False, weight = None, cfg = False, threshold = 0.1): #ここでnoiseはない。logはなしだが、weightはある。
         b, c, h, w = x_start.shape
         noise = default(noise, lambda: torch.randn_like(x_start)) #x_startと同じ形でランダムなやつ
 
@@ -435,13 +436,13 @@ class GaussianDiffusion(nn.Module):
         mix_t = self.q_sample(x_start = condition[0], t = t, noise = noise) #mixのスペクトログラムに対して、ノイズを加えたものがくる
 
         x_self_cond = None
-        if self.self_condition and random() < 0.5:
+        if self.self_condition and random() < 0.5: #ここは実行されてない
             with torch.no_grad():
                 x_self_cond = self.model_predictions(x, t).pred_x_start
                 x_self_cond.detach()
 
         # classifer free guidance
-        if cfg: #条件を時々なしにする
+        if cfg: #条件を時々なしにする　ここは実行されない
             mix, visual_feature = condition
             idx = torch.where(torch.rand(b) < threshold)
             mix[idx] = 0
@@ -464,17 +465,17 @@ class GaussianDiffusion(nn.Module):
 
         if log:
            loss = torch.log1p(weight * self.loss_fn(model_out, target, reduction = 'none'))
-        else:
+        else: #ここが実行される
             loss = weight * self.loss_fn(model_out, target, reduction = 'none')
         loss = reduce(loss, 'b ... -> b (...)', 'mean')
 
         loss = loss * extract(self.p2_loss_weight, t, loss.shape)
         return loss.mean()
 
-    def forward(self, img, condition, *args, **kwargs):
+    def forward(self, img, condition, *args, **kwargs): #imgってのはメルスペクトログラムのこと
         b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
         assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long() #ランダムでtを選ぶ
 
-        img = self.normalize(img)
+        img = self.normalize(img) #このまま処理されてる
         return self.p_losses(img, t, condition, *args, **kwargs)

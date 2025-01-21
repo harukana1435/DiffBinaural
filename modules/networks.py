@@ -116,11 +116,11 @@ class Clip(nn.Module):
         x = self.model.encode_image(x)
 
         (_, C) = x.size()
-        x = x.view(B, T, C).transpose(1,2)
+        x = x.view(B, T, C)
 
         # transformer
         # x = self.temporal_transformer(x.transpose(1,2)).transpose(1,2)
-        x = self.temporal_transformer(x.transpose(1,2), x.transpose(1,2)).transpose(1,2)
+        x = self.temporal_transformer(x, x).transpose(1,2) #(B, C, T)
         
         if not pool:
             return x

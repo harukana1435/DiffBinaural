@@ -10,27 +10,26 @@ OPTS+="--list_val /home/h-okano/DiffBinaural/FairPlay/splits_csv/split1/val.csv 
 OPTS+="--img_pool maxpool "
 OPTS+="--num_channels 64 "
 OPTS+="--loss l1 "
-OPTS+="--weighted_loss 0 "
+OPTS+="--weighted_loss 0 " #weighted_lossはなしにしてる
 
 # logscale in frequency
 OPTS+="--log_freq 1 "
 
 # frames-related
 OPTS+="--arch_frame clip " # [resnet18, clip]
-OPTS+="--num_frames 10 " #特徴量としてどれくらい画像を使うか
-OPTS+="--stride_frames 2 " #どれくらい画像の感覚を開けるか
+OPTS+="--num_frames 4 " #特徴量としてどれくらい画像を使うか
 OPTS+="--vidRate 8 " #動画のfps
 
 # audio-related
-OPTS+="--audLen 16384 " # 65535
-OPTS+="--audRate 16000 " #11025
+OPTS+="--audLen 16384 " # 16384
+OPTS+="--audRate 16000 " #16000
 OPTS+="--num_mels 64 "
 
 # learning params
 OPTS+="--num_gpus 1 "
 OPTS+="--gpu_ids 5 "
 OPTS+="--workers 20 "
-OPTS+="--batch_size_per_gpu 64 "
+OPTS+="--batch_size_per_gpu 32 "
 OPTS+="--lr_frame 1e-4 " #1e-4
 OPTS+="--lr_unet 1e-4 " #1e-4
 OPTS+="--num_epoch 400 "

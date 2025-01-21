@@ -36,11 +36,11 @@ class NetWrapper(torch.nn.Module):
         self.sampler = diffusion_pytorch.GaussianDiffusion(
             self.net,
             image_size = 64,
-            timesteps = 1000,   # number of steps
+            timesteps = 400,   # number of steps
             sampling_timesteps = 15, # if ddim else None
             loss_type = 'l1',    # L1 or L2
             objective = 'pred_noise', # pred_noise or pred_x0
-            beta_schedule = 'sigmoid',
+            beta_schedule = 'cosine', #linear or cosine or sigmoid 64×64の画像なので、コサインとした
             ddim_sampling_eta = 1.,
             auto_normalize = False,
             min_snr_loss_weight=False
@@ -66,10 +66,12 @@ class NetWrapper(torch.nn.Module):
 
 
     def forward(self, batch_data, args, t):
-        mix_mel = batch_data['mix_mel']
-        diff_mel = batch_data['diff_mel']
-        frames = batch_data['frames']
+        mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
+        diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
+        frames = batch_data['frames'] #(B, L, C, H, W) L=4, C=3, H=224, W=224 
         pointclouds = batch_data['pointclouds']
+        
+        print(mix_mel.shape, flush=True)
 
         B = mix_mel.size(0)
         T = mix_mel.size(2)
@@ -77,13 +79,13 @@ class NetWrapper(torch.nn.Module):
         if args.weighted_loss:
             weight = mix_mel
             # weight = torch.clamp(weight, 1e-3, 10)
-            weight = weight > 1e-3
+            weight = weight > 1e-3 #mixe_melの値が1e-3以上のものにweightをつけている
         else:
             weight = torch.ones_like(mix_mel)
 
         # LOG magnitude
-        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor
-        log_diff_mel = torch.log1p(diff_mel) * self.scale_factor
+        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
+        log_diff_mel = torch.log1p(diff_mel) * self.scale_factor #正規化
         #log_mix_mel.clamp_(0., 1.)
         #log_diff_mel.clamp_(0., 1.)
         # detach
@@ -91,7 +93,7 @@ class NetWrapper(torch.nn.Module):
         log_diff_mel = log_diff_mel.detach()
 
         # Frame feature (conditions)
-        feat_frames = self.net_frame.forward_multiframe(frames, pool=False)
+        feat_frames = self.net_frame.forward_multiframe(frames, pool=False) #(B, C, T)
         
         # Loss
         loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
@@ -373,7 +375,7 @@ def train(netWrapper, loader, optimizer, history, epoch, args, writer, running_l
 
         # forward pass
         optimizer.zero_grad()
-        t = torch.randint(0, args.num_train_timesteps, (args.batch_size,), device='cuda').long()
+        t = torch.randint(0, args.num_train_timesteps, (args.batch_size,), device='cuda').long() #diffusion modelの中で、定義されてるからいらないかも
         err = netWrapper.forward(batch_data, args, t)
         err = err.mean()
 
@@ -544,7 +546,7 @@ if __name__ == '__main__':
     if args.mode == 'train' or args.mode == 'eval':
         if args.log_freq:
             args.id += '-LogFreq'
-        args.id += '-frames{}stride{}'.format(args.num_frames, args.stride_frames)
+        args.id += '-frames{}'.format(args.num_frames)
         args.id += '-channels{}'.format(args.num_channels)
         args.id += '-epoch{}'.format(args.num_epoch)
         args.id += '-step' + '_'.join([str(x) for x in args.lr_steps])

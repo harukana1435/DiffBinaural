@@ -23,7 +23,7 @@ class ModelBuilder():
         return net
 
     #builder for audio stream
-    def build_unet(self, dim=64, input_nc=1, output_nc=1, weights=''):
+    def build_unet(self, dim=128, input_nc=1, output_nc=1, weights=''):
         net = AudioVisualModel(dim=dim, input_nc=input_nc, output_nc=output_nc)
         if len(weights) > 0:
             print('Loading weights for UNet')
