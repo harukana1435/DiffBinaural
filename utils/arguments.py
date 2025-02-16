@@ -24,10 +24,13 @@ class ArgParser(object):
                             help="loss function to use")
         parser.add_argument('--weighted_loss', default=1, type=int,
                             help="weighted loss")
-        parser.add_argument('--log_freq', default=1, type=int,
-                            help="log frequency scale")
         parser.add_argument('--split', default='val',
                             help="val or test")
+        
+        parser.add_argument('--decay_factor', default=0.94, type=float)
+        parser.add_argument('--learning_rate_decrease_itr', default=10, type=int)
+        
+        parser.add_argument('--max_sources', default=4, type=int)
 
         # Data related arguments
         parser.add_argument('--num_gpus', default=1, type=int,
@@ -75,8 +78,8 @@ class ArgParser(object):
         
         parser.add_argument('--dir_frames', default='/home/h-okano/DiffBinaural/FairPlay/frames',
                             help='dir of frames')
-        parser.add_argument('--dir_pointcloud', default='/home/h-okano/DiffBinaural/processed_data/pointcloud',
-                            help='folder to output checkpoints')        
+        parser.add_argument('--dir_det_pos', default='/home/h-okano/DiffBinaural/processed_data/det_pos_npy',
+                            help='folder to detection and 3d position')        
 
 
         self.parser = parser
@@ -90,7 +93,7 @@ class ArgParser(object):
                             default='/home/yeyx/Data/Audio-Visual-Spatial-Audio-Sepration/data/solo_train.csv')
         parser.add_argument('--list_val',
                             default='/home/yeyx/Data/Audio-Visual-Spatial-Audio-Sepration/data/solo_val.csv')
-        parser.add_argument('--dup_trainset', default=10, type=int,
+        parser.add_argument('--dup_trainset', default=1, type=int,
                             help='duplicate so that one epoch has more iters')
 
         # optimization related arguments
@@ -109,6 +112,14 @@ class ArgParser(object):
                             help='weights regularizer')
         self.parser = parser
 
+    def add_test_arguments(self):
+        parser = self.parser
+
+        parser.add_argument('--mode', default='eval', help="train/eval")
+        parser.add_argument('--list_test', default='/home/yeyx/Data/Audio-Visual-Spatial-Audio-Sepration/data/solo_train.csv')
+        parser.add_argument('--output_dir', default='./generated_files')
+        self.parser = parser
+
     def print_arguments(self, args):
         print("Input arguments:")
         for key, val in vars(args).items():
@@ -116,6 +127,12 @@ class ArgParser(object):
 
     def parse_train_arguments(self):
         self.add_train_arguments()
+        args = self.parser.parse_args()
+        self.print_arguments(args)
+        return args
+    
+    def parse_test_arguments(self):
+        self.add_test_arguments()
         args = self.parser.parse_args()
         self.print_arguments(args)
         return args

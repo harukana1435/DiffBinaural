@@ -176,9 +176,6 @@ class Unet(nn.Module):
         self_condition = False,
         resnet_block_groups = 8,
         learned_variance = False,
-        learned_sinusoidal_cond = False,
-        random_fourier_features = False,
-        learned_sinusoidal_dim = 16
     ):
         super().__init__()
 
@@ -198,12 +195,9 @@ class Unet(nn.Module):
         
         attn_block = partial(AttentionBlock, n_heads=4, d_head=32, groups= 8)
 
-        # frequency dimensions (the initial shape of frequency dimensions is 256)
-        resolution = [1, 2, 4, 8, 16] #周波数
-
         # time embeddings
 
-        time_dim = dim * 4 #256
+        time_dim = dim * 4 #512
         context_dim = 512 #視覚特徴
 
         sinu_pos_emb = SinusoidalPosEmb(dim)
@@ -226,25 +220,23 @@ class Unet(nn.Module):
 
             self.downs.append(nn.ModuleList([
                 res_block(dim_in, dim_in, time_emb_dim = time_dim), # 64, 64, 256
-                attn_block(dim_in, time_emb_dim = time_dim),
+                attn_block(dim_in, time_emb_dim = time_dim, context_dim=context_dim),
                 Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1)
             ]))
 
         mid_dim = dims[-1]
  
         # # baseline
-        self.mid_block1 = res_block(mid_dim+visual_dim, mid_dim, time_emb_dim = time_dim)
-        self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim, time_emb_dim = time_dim)))
+        self.mid_block1 = res_block(mid_dim, mid_dim, time_emb_dim = time_dim)
+        self.mid_attn = MiddleAttentionBlock(mid_dim, time_emb_dim=time_dim)
         self.mid_block2 = res_block(mid_dim, mid_dim, time_emb_dim = time_dim)
 
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
-
             self.ups.append(nn.ModuleList([
                 res_block(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
-                Residual(PreNorm(dim_out, LinearAttention(dim_out, time_emb_dim = time_dim))),
-                #Residual(TimeAttention(dim_out, n_freqs=N_freqs[(len(in_out) - 1) - ind], time_emb_dim = time_dim)),
+                attn_block(dim_out, time_emb_dim = time_dim, context_dim=context_dim),
                 Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
             ]))
 
@@ -267,58 +259,34 @@ class Unet(nn.Module):
 
         x = self.init_conv(x)
         t = self.time_mlp(time)
-        v = torch.mean(visual_feat, dim=2)
+        
         c = t
 
         r = x.clone()
         
+        
 
         h = []
 
-        # baseline
-        # for block1, block2, attn, downsample in self.downs:
-        #     x = block1(x, c)
-
-        #     x = block2(x, time_emb=c)
-        #     x = attn(x, time_emb=c)
-        #     h.append(x)
-
-        #     x = downsample(x)
             
-        for block1, block2, downsample in self.downs:
-            x = block1(x, c)
+        for res_block, attn_block, downsample in self.downs:
+            x = res_block(x, time_emb=c)
 
-            x = block2(x, time_emb=c)
+            x = attn_block(x, context=visual_feat, time_emb=c)
             h.append(x)
 
             x = downsample(x)
 
-        visual_feat = visual_feat.transpose(1,2)
-        visual_feat_cat = torch.mean(visual_feat, dim=1)
-        visual_feat_cat = visual_feat_cat.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, x.shape[2], x.shape[3])
+        x = self.mid_block1(x, time_emb=c)
+        x = self.mid_attn(x, time_emb=c)
+        x = self.mid_block2(x, time_emb=c)
 
-        x_in = x
-        
-        x = torch.cat([visual_feat_cat,x_in], dim=1)
-        x = self.mid_block1(x, None)
-        x = self.mid_attn(x, time_emb=None)
-        x = self.mid_block2(x, None)
-
-        # # baseline 
-        # for block1, block2, attn, upsample in self.ups:
-        #     x = torch.cat((x, h.pop()), dim = 1)
-        #     x = block1(x, c)
-
-        #     x = block2(x, time_emb=c)
-        #     x = attn(x, time_emb=c)
-
-        #     x = upsample(x)
             
-        for block1, block2, upsample in self.ups:
+        for res_block, attn_block, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim = 1)
-            x = block1(x, c)
+            x = res_block(x, time_emb=c)
 
-            x = block2(x, time_emb=c)
+            x = attn_block(x, context=visual_feat, time_emb=c)
 
             x = upsample(x)    
 

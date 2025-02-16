@@ -62,15 +62,61 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class MaskedAttention(nn.Module):
+    def __init__(self, query_dim, heads=8, dim_head=64, dropout=0.1):
+        super().__init__()
+        inner_dim = dim_head * heads # inner_dim == SpatialTransformer.model_channels
+
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(query_dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(query_dim, inner_dim, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, query_dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x, mask=None):# x:(b,n,c)
+        h = self.heads
+
+        q = self.to_q(x)# q:(b,n,inner_dim)
+        k = self.to_k(x)# (b,n,inner_dim)
+        v = self.to_v(x)# (b,n,inner_dim)
+
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q,k,v)) # 各 (b*h, n, dim_head)
+
+        sim = einsum('b i d, b j d -> b i j', q, k) * self.scale # (b*h, n, n)
+
+        if exists(mask):# false
+            mask = rearrange(mask, 'b n -> b n')  # (b, n)
+            max_neg_value = -torch.finfo(sim.dtype).max
+            mask = repeat(mask, 'b j -> (b h) () j', h=h)  # (b*h, 1, n)
+            sim.masked_fill_(~mask, max_neg_value)
+
+        # attention, what we cannot get enough of
+        attn = sim.softmax(dim=-1)
+
+        out = einsum('b i j, b j d -> b i d', attn, v)# (b*head,n,inner_dim/head)
+        out = rearrange(out, '(b h) n d -> b n (h d)', h=h)# (b,n c)
+        return self.to_out(out)
+
+
 
 class LinearAttention(nn.Module):
-    def __init__(self, dim, heads = 4, dim_head = 32, time_emb_dim = None):
+    def __init__(self, dim, heads = 4, dim_head = 32, time_emb_dim = None, f_attn=None, t_attn=None):
         super().__init__()
+        self.f_attn=f_attn
+        self.t_attn=t_attn
+        
         self.scale = dim_head ** -0.5
         self.heads = heads
         hidden_dim = dim_head * heads #32 × 4
-        self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias = False)
-
+            
+        self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1)
+        
         self.to_out = nn.Sequential(
             nn.Conv2d(hidden_dim, dim, 1),
             LayerNorm(dim)
@@ -81,7 +127,7 @@ class LinearAttention(nn.Module):
         ) if exists(time_emb_dim) else None
 
 
-    def forward(self, x, time_emb = None, f_attn=False, t_attn=False):
+    def forward(self, x, time_emb = None):
         if exists(self.mlp) and exists(time_emb):
             time_emb = self.mlp(time_emb)
             time_emb = rearrange(time_emb, 'b c -> b c 1 1')
@@ -91,10 +137,10 @@ class LinearAttention(nn.Module):
 
         _, _, t, f = x.shape
 
-        if f_attn:
-            x = rearrange(x, 'b c t (x y) -> b (c x) t y', x = f//f_attn, y = f_attn)           
-        elif t_attn:
-            x = rearrange(x, 'b c (x y) f -> b (c x) y f', x = t//t_attn, y = t_attn)  
+        if self.f_attn:
+            x = rearrange(x, 'b c t (x y) -> (b x) c t y', x = f//self.f_attn, y = self.f_attn)           
+        elif self.t_attn:
+            x = rearrange(x, 'b c (x y) f -> (b x) c y f', x = t//self.t_attn, y = self.t_attn)  
         else:
             pass
 
@@ -115,10 +161,10 @@ class LinearAttention(nn.Module):
         out = rearrange(out, 'b h c (x y) -> b (h c) x y', h = self.heads, x = h, y = w)
 
 
-        if f_attn:
-            out = rearrange(out, 'b (c x) t y -> b c t (x y)', x = f//f_attn, y = f_attn)  
-        elif t_attn:
-            out = rearrange(out, 'b (c x) y f -> b c (x y) f', x = t//t_attn, y = t_attn)    
+        if self.f_attn:
+            out = rearrange(out, '(b x) c t y -> b c t (x y)', x = f//self.f_attn, y = self.f_attn)  
+        elif self.t_attn:
+            out = rearrange(out, '(b x) c y f -> b c (x y) f', x = t//self.t_attn, y = self.t_attn)    
         else:
             pass
 
@@ -126,27 +172,25 @@ class LinearAttention(nn.Module):
     
     
 class LinearAttentionBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, f_attn=None, t_attn=None):
+    def __init__(self, dim, n_heads, d_head, resolution = None):
         super().__init__()
 
-        self.f_attn = f_attn
-        self.t_attn = t_attn
-
         # 周波数方向のアテンション
-        self.f_linear_attn = LinearAttention(dim, heads=n_heads, dim_head=d_head)
+        self.f_linear_attn = LinearAttention(dim, heads=n_heads, dim_head=d_head, f_attn=resolution)
 
         # 時間軸方向のアテンション
-        self.t_linear_attn = LinearAttention(dim, heads=n_heads, dim_head=d_head)
+        self.t_linear_attn = LinearAttention(dim, heads=n_heads, dim_head=d_head, t_attn=resolution)
 
         # Conv2dで元の形状に戻すための層
         self.conv_out = nn.Conv2d(dim*2, dim, 1)
 
     def forward(self, x):
+        
         # 周波数方向のアテンション
-        f_attn_out = self.f_linear_attn(x, f_attn=self.f_attn)
+        f_attn_out = self.f_linear_attn(x)
 
         # 時間軸方向のアテンション
-        t_attn_out = self.t_linear_attn(x, t_attn=self.t_attn)
+        t_attn_out = self.t_linear_attn(x)
 
         # 残差接続と連結
         combined = torch.cat([f_attn_out, t_attn_out], dim=1)
@@ -155,6 +199,7 @@ class LinearAttentionBlock(nn.Module):
         out = self.conv_out(combined)
 
         return out
+    
 
 class Attention(nn.Module):
     def __init__(self, dim, heads = 4, dim_head = 32, time_emb_dim = None):
@@ -207,7 +252,7 @@ class CrossAttention(nn.Module):
         self.to_v = nn.Conv2d(context_dim, inner_dim, 1)
 
         self.to_out = nn.Sequential(
-            nn.Conv2d(inner_dim, query_dim),
+            nn.Conv2d(inner_dim, query_dim, 1),
             nn.Dropout(dropout)
         )
 
@@ -215,9 +260,8 @@ class CrossAttention(nn.Module):
         b, c, h, w = x.shape
         q = self.to_q(x)# q:(b,inner_dim, h, w)
 
-        context = context[:, :, None, None].expand(-1, -1, q.shape[-2], q.shape[-1]) if context is not None else x #context:(b, context_dim, h, w)
+        #context = context[:, :, None, None].expand(-1, -1, q.shape[-2], q.shape[-1]) if context is not None else x #context:(b, context_dim, h, w)
 
-        
         k = self.to_k(context)# (b,,inner_dim, h, w)
         v = self.to_v(context)# (b,,inner_dim, h, w)
 
@@ -251,25 +295,19 @@ class UnifiedAttention(nn.Module):
         super().__init__()
         self.self_attn = Attention(dim, heads=n_heads, dim_head=d_head, time_emb_dim=time_emb_dim)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
-        # self.linear_attn1 = LinearAttentionBlock(dim, heads=n_heads, dim_head=d_head,f_attn=1, t_attn=1)
-        # self.linear_attn4 = LinearAttentionBlock(dim, heads=n_heads, dim_head=d_head,f_attn=4, t_attn=4)
-        self.linear_attn8 = LinearAttentionBlock(dim, heads=n_heads, dim_head=d_head,f_attn=8, t_attn=8)
+        self.linear_attn1 = LinearAttentionBlock(dim, n_heads=n_heads, d_head=d_head,resolution=4)
         self.closs_attn = CrossAttention(query_dim=dim, context_dim=context_dim,
                                     heads=n_heads, dim_head=d_head, dropout=dropout)  # is cross-attention
         self.norm1 = LayerNorm(dim)
-        # self.norm2 = LayerNorm(dim)
-        # self.norm3 = LayerNorm(dim)
+        self.norm2 = LayerNorm(dim)
+        self.norm3 = LayerNorm(dim)
         self.norm4 = LayerNorm(dim)
-        self.norm5 = LayerNorm(dim)
-        self.norm6 = LayerNorm(dim)
 
     def forward(self, x, context=None, time_emb=None):
         x = self.self_attn(self.norm1(x), time_emb) + x
-        # x = self.linear_attn1(self.norm2(x)) + x
-        # x = self.linear_attn4(self.norm3(x)) + x
-        x = self.linear_attn8(self.norm4(x)) + x
-        x = self.closs_attn(self.norm5(x), context=context) + x
-        x = self.ff(self.norm6(x)) + x
+        x = self.linear_attn1(self.norm2(x)) + x
+        x = self.closs_attn(self.norm3(x), context=context) + x
+        x = self.ff(self.norm4(x)) + x
         return x
 
 
@@ -292,10 +330,59 @@ class AttentionBlock(nn.Module):
     def forward(self, x, context=None, time_emb = None):
         b, c, h, w = x.shape
         x_in = x
+        
+        context = context.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, x.shape[2], x.shape[3])
+        
         x = self.gnorm(x)# group norm
         x = self.proj_in(x)# no shape change
         
         x = self.transformer_block(x, context=context, time_emb = time_emb)# context shape [b,context_dim]
+        
+        x = self.proj_out(x)
+        return x + x_in
+    
+    
+class MiddleUnifiedAttention(nn.Module):
+    def __init__(self, dim, n_heads, d_head, dropout=0., gated_ff=True, time_emb_dim = None):
+        super().__init__()
+        self.self_attn1 = Attention(dim, heads=n_heads, dim_head=d_head, time_emb_dim=time_emb_dim)
+        self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
+        self.self_attn2 = Attention(dim, heads=n_heads, dim_head=d_head)
+        self.norm1 = LayerNorm(dim)
+        self.norm2 = LayerNorm(dim)
+        self.norm3 = LayerNorm(dim)
+
+
+    def forward(self, x, context=None, time_emb=None):
+        x = self.self_attn1(self.norm1(x), time_emb) + x
+        x = self.self_attn2(self.norm2(x)) + x
+        x = self.ff(self.norm3(x)) + x
+        return x    
+
+class MiddleAttentionBlock(nn.Module):
+    def __init__(self, in_channels, n_heads=4, d_head=32, dropout=0, groups=8, time_emb_dim=None):
+        super().__init__()
+        self.in_channels = in_channels
+        inner_dim = in_channels
+        self.gnorm = nn.GroupNorm(groups, in_channels)
+
+        self.proj_in = nn.Conv2d(in_channels,
+                                 inner_dim,
+                                 1)
+
+        self.transformer_block = MiddleUnifiedAttention(inner_dim, n_heads, d_head, dropout=dropout, time_emb_dim=time_emb_dim)
+        self.proj_out = nn.Conv2d(inner_dim,
+                                in_channels,
+                                1)
+
+    def forward(self, x, time_emb = None):
+        b, c, h, w = x.shape
+        x_in = x
+        
+        x = self.gnorm(x)# group norm
+        x = self.proj_in(x)# no shape change
+        
+        x = self.transformer_block(x, time_emb = time_emb)# context shape [b,context_dim]
         
         x = self.proj_out(x)
         return x + x_in

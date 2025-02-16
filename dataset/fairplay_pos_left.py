@@ -7,9 +7,9 @@ import torchaudio
 import torch
 
 
-class FairPlayDataset(BaseDataset):
+class FairPlayPosLeftDataset(BaseDataset):
     def __init__(self, list_sample, opt, **kwargs):
-        super(FairPlayDataset, self).__init__(
+        super(FairPlayPosLeftDataset, self).__init__(
             list_sample, opt, **kwargs)
 
 
@@ -34,7 +34,7 @@ class FairPlayDataset(BaseDataset):
         if audio is not None: 
             left_audio, right_audio = audio[0], audio[1]
             mix_audio = torch.FloatTensor(((left_audio + right_audio) / 2).unsqueeze(0))
-            diff_audio = torch.FloatTensor(right_audio.unsqueeze(0))
+            diff_audio = torch.FloatTensor(left_audio.unsqueeze(0))
 
             try:
                 # メルスペクトログラムの計算
@@ -78,15 +78,26 @@ class FairPlayDataset(BaseDataset):
             os.path.join(self.dir_frames, f"{basename}.mp4", f"{i:06d}.jpg") for i in even_frame_indices
         ]
         
-        try:
-    # フレームパスを生成して読み込む
-            frames = self._load_frames(frame_paths)
-        except Exception as e:
-            print(f"Error loading frames for basename: {basename}")
-            print(f"Details: {e}")
-            frames = None  # エラー時は None を返すなどの処理
+        det_pos_data_path = os.path.join(self.dir_det_pos, basename+".npy")
+        det_pos_data = np.load(det_pos_data_path, allow_pickle=True).item()
+        
+        for i, num in enumerate(even_frame_indices):
+            if num >= det_pos_data['bounding_boxes'].shape[0]*2:
+                even_frame_indices[i] = det_pos_data['bounding_boxes'].shape[0]*2
+                
+        det_data = [det_pos_data['bounding_boxes'][i//2-1] for i in even_frame_indices]
+        
+        frames, mask = self._load_frames_det(frame_paths, det_data)
+        
+        mask = np.array([mask for _ in range(self.num_frames)])
+        
+        pos_data = [det_pos_data['pos_3d'][i//2-1] for i in even_frame_indices]
+        pos_data = np.array([np.pad(data, ((0, self.max_sources-data.shape[0]),(0,0)), constant_values=0) for data in pos_data])
+            
+            
 
-        ret_dict = {'mix_mel': mix_mel, 'diff_mel':diff_mel, 'frames': frames}
+        ret_dict = {'mix_mel': mix_mel, 'diff_mel':diff_mel, 'frames': frames,
+                    'pos_data':pos_data, 'mask':mask}
         return ret_dict
     
     

@@ -309,17 +309,19 @@ class GaussianDiffusion(nn.Module):
         return ret
 
     @torch.no_grad()
-    def ddim_sample(self, condition, shape, return_all_timesteps = False, silence_mask_sampling = False, threshold = 2e-3):
-        batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
+    def ddim_sample(self, condition, return_all_timesteps = False, silence_mask_sampling = False, threshold = 2e-3):
+        device, total_timesteps, sampling_timesteps, eta = self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta #etaは1
 
-        times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
+        times = torch.linspace(-1, total_timesteps-1, steps = sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps 
         times = list(reversed(times.int().tolist()))
-        time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+        time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (0, -1)]
 
         mix = condition[0].detach()
+        batch = mix.shape[0]
         silence_mask = (mix < threshold).float()
+    
  
-        img = torch.randn(shape, device = device)
+        img = torch.randn_like(mix).to(device)
         mix_t = img + mix
         condition.append(mix_t)
         imgs = [img]
@@ -329,7 +331,7 @@ class GaussianDiffusion(nn.Module):
         # noise = torch.randn_like(img)
 
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
-            time_cond = torch.full((batch,), time, device = device, dtype = torch.long)
+            time_cond = torch.full((batch,), time, dtype=torch.long, device=device)
             self_cond = x_start if self.self_condition else None
             pred_noise, x_start, *_ = self.model_predictions(img, time_cond, condition, self_cond, clip_x_start = True)
 

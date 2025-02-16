@@ -18,7 +18,7 @@ from tqdm import tqdm
 # Our libs
 from utils.arguments import ArgParser
 from dataset.fairplay import FairPlayDataset
-from dataset.fairplay_pos import FairPlayPosDataset
+from dataset.fairplay_pos_left import FairPlayPosLeftDataset
 from modules import models
 from diffusion_utils import diffusion_pytorch
 from utils.helpers import AverageMeter, magnitude2heatmap, \
@@ -69,7 +69,9 @@ class NetWrapper(torch.nn.Module):
     def forward(self, batch_data, args):
         mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
         diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
-        frames = batch_data['frames'] #(B, C, L, N, H, W) L=5, N=4, C=3, H=224, W=224
+        frames = batch_data['frames'] #(B, C, L, N, H, W) L=5, N=4, C=3, H=224, W=224 
+        pos = batch_data['pos_data'] # (B, L, N, 3) 距離、仰角、方位角の順番
+        mask = batch_data['mask'] #(B, L, N)
         
 
         B = mix_mel.size(0)
@@ -91,7 +93,7 @@ class NetWrapper(torch.nn.Module):
         log_diff_mel = log_diff_mel.detach()
 
         # Frame feature (conditions)
-        feat_frames = self.net_frame.forward_multiframe(frames, pool=False) #(B, C, T)
+        feat_frames = self.net_frame.forward_multiframe(frames, pos, mask) #(B, C)
         
         # Loss
         loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
@@ -105,6 +107,8 @@ class NetWrapper(torch.nn.Module):
         mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
         diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
         frames = batch_data['frames'] #(B, L, C, H, W) L=4, C=3, H=224, W=224
+        pos = batch_data['pos_data'] # (B, L, N, 3) 距離、仰角、方位角の順番
+        mask = batch_data['mask'] #(B, L, N)
 
         B = mix_mel.size(0)
         T = mix_mel.size(2)
@@ -116,10 +120,10 @@ class NetWrapper(torch.nn.Module):
         log_mix_mel = log_mix_mel.detach()
         
         # Frame feature (conditions)
-        feat_frames = self.net_frame.forward_multiframe(frames, pool=False) #(B, C, T)
+        feat_frames = self.net_frame.forward_multiframe(frames, pos, mask) #(B, C)
         
         # ddim sampling
-        preds = self.sampler.ddim_sample(condition=[log_mix_mel, feat_frames], return_all_timesteps = True)
+        preds = self.sampler.ddim_sample(condition=[log_mix_mel, feat_frames], return_all_timesteps = True, silence_mask_sampling = True)
 
         pred = preds[:, -1, ...]
 
@@ -303,9 +307,9 @@ def main(args):
     nets = (net_frame, net_unet)
 
     # Dataset and Loader
-    dataset_train = FairPlayDataset(
+    dataset_train = FairPlayPosLeftDataset(
         args.list_train, args, split='train')
-    dataset_val = FairPlayDataset(
+    dataset_val = FairPlayPosLeftDataset(
         args.list_val, args, max_sample=args.num_val, split=args.split)
 
     loader_train = torch.utils.data.DataLoader(

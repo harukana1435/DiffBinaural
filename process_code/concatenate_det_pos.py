@@ -17,9 +17,11 @@ def concatenate_det_pos(det_path,pointcloud_path, output_path):
     bounding_boxes = npy_data['bounding_boxes']  # バウンディングボックスのデータ
     # 3D位置データを格納するリスト
     pos_3d = []
-
     if(bounding_boxes.ndim == 2):
         bounding_boxes = np.tile(bounding_boxes, (40, 1, 1))
+        print(output_path)
+    else:
+        return
     num_frame, num_sources, bb = bounding_boxes.shape
 
     for frame in range(num_frame):
@@ -55,6 +57,7 @@ def concatenate_det_pos(det_path,pointcloud_path, output_path):
     #print(pos_3d)
     # npy_data に '3d_pos' を追加
     npy_data['pos_3d'] = np.array(pos_3d, dtype=np.float16)
+    npy_data['bounding_boxes'] = bounding_boxes
     
     np.save(output_path, npy_data)
 
@@ -65,12 +68,12 @@ if __name__=="__main__":
         if filename.endswith('.npy'):
             det_path = os.path.join(det_dir,filename)
             basename = os.path.splitext(filename)[0]
-            print(basename)
+            #print(basename)
             pointcloud_path = os.path.join(pointcloud_dir, basename+'.mp4')
             output_path = os.path.join(output_dir, basename+'.npy')
-            if os.path.exists(output_path):
-                print(f"continue {basename}")
-                continue
+            # if os.path.exists(output_path):
+            #     print(f"continue {basename}")
+            #     continue
             concatenate_det_pos(det_path,pointcloud_path, output_path)
         
             

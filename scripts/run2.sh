@@ -1,7 +1,7 @@
 #!/bin/bash 
 
 OPTS=""
-OPTS+="--id right_pos_sin "
+OPTS+="--id Binaural_Lenear_pos_left_silent "
 
 OPTS+="--list_train /home/h-okano/DiffBinaural/FairPlay/splits_csv/split1/train.csv "
 OPTS+="--list_val /home/h-okano/DiffBinaural/FairPlay/splits_csv/split1/val.csv "
@@ -46,4 +46,4 @@ OPTS+="--num_val 40 " #どれくらい検証データとして使うかを表す
 OPTS+="--split val "
 OPTS+="--mode train"
 
-python -u /home/h-okano/DiffBinaural/main_pos.py $OPTS
+python -u /home/h-okano/DiffBinaural/main_pos2.py $OPTS

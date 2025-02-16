@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange
+from modules.attention import MaskedAttention
 
 # helpers functions
 
@@ -131,6 +132,167 @@ class Clip(nn.Module):
             x = torch.max(x, 2)[0]
 
         return x
+
+
+class Clip(nn.Module):
+    def __init__(self, model, pool_type='maxpool', use_transformer=False):
+        super(Clip, self).__init__()
+        self.pool_type = pool_type
+        self.model = model
+        self.emb_dim = 512
+        #print(*list(model.children()))
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        self.temporal_transformer_encoder = nn.TransformerEncoderLayer(
+            d_model=self.emb_dim,    # 埋め込み次元
+            nhead=8,                  # ヘッド数
+            dim_feedforward=2048,     # フィードフォワードネットワークのサイズ
+            batch_first=True          # バッチサイズが最初に来る場合
+        )
+            # encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8, batch_first=True)
+            # self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
+
+        # for param in self.temporal_transformer.parameters():
+        #     param.requires_grad = False
+
+    def forward(self, x, pool=True):
+        x = self.model.encode_image(x)
+
+        return x
+
+    def forward_text(self, x):
+        x = self.model.encode_text(x)
+        return x
+        
+    def forward_multiframe(self, x, pool=True):
+        (B, C, T, H, W) = x.size()
+        x = x.permute(0, 2, 1, 3, 4).contiguous()
+        x = x.view(B * T, C, H, W)
+        
+        x = self.model.encode_image(x)
+
+        (_, C) = x.size()
+        x = x.view(B, T, C)
+
+        # transformer
+        x = self.temporal_transformer_encoder(x) #(B, T, C)
+        
+        x = torch.mean(x, dim=1) #(B, 512)
+
+        return x
+    
+    
+    
+    
+class Clip_Pos(nn.Module):
+    def __init__(self, model, pool_type='maxpool', dropout = 0.1):
+        super(Clip_Pos, self).__init__()
+        self.pool_type = pool_type
+        self.model = model
+        self.max_sources = 4
+        
+        self.emb_dim = 512
+        
+        #print(*list(model.children()))
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        self.pos_emb = SinusoidalPosEmb(64)
+        self.pos_emb_mlp = nn.Linear(192, 1024)
+        self.pos_emb_act = nn.GELU()
+        
+       
+        
+        self.pos_attention = MaskedAttention(query_dim=self.emb_dim, heads=8, dim_head=64) #query_dimは音源の最大値であるN=4がはいる。
+        self.pos_layer1 = nn.LayerNorm(self.emb_dim)
+        self.pos_ff = PositionwiseFeedForward(self.emb_dim, self.emb_dim*4)
+        self.pos_layer2 = nn.LayerNorm(self.emb_dim)
+        self.pos_dropout = nn.Dropout(dropout)
+        
+        self.temporal_transformer_encoder = nn.TransformerEncoderLayer(
+            d_model=self.emb_dim,    # 埋め込み次元
+            nhead=8,                  # ヘッド数
+            dim_feedforward=2048,     # フィードフォワードネットワークのサイズ
+            batch_first=True          # バッチサイズが最初に来る場合
+        )
+            # encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8, batch_first=True)
+            # self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
+
+        # for param in self.temporal_transformer.parameters():
+        #     param.requires_grad = False
+
+    def forward(self, x, pool=True):
+        x = self.model.encode_image(x)
+
+        return x
+
+    def forward_text(self, x):
+        x = self.model.encode_text(x)
+        return x
+        
+    def forward_multiframe(self, x, pos, mask):
+        (B, C, T, N, H, W) = x.size()
+        x = x.permute(0, 2, 3, 1, 4, 5).contiguous()
+        x = x.view(B * T * N, C, H, W)
+        
+        x = self.model.encode_image(x)
+
+        (_, C) = x.size()
+        x = x.view(B*T, N, C)
+
+        pos = pos.view(B*T*N*3)
+        pos = self.pos_emb(pos)
+        pos = pos.view(B*T*N, -1)
+        pos = self.pos_emb_mlp(pos)
+        pos = self.pos_emb_act(pos)
+        pos = pos.view(B*T, N, 1024)
+        scale, shift = pos.chunk(2, dim=2)
+        x = x * (scale + 1) + shift
+        
+        mask = mask.view(B*T, N)
+        pos_attn = self.pos_attention(x, mask) #(B*T, N, 512)
+        x = x + self.pos_dropout(pos_attn)
+        x = self.pos_layer1(x)
+        ff_output = self.pos_ff(x)
+        x = x + self.pos_dropout(ff_output)
+        x = self.pos_layer2(x)
+        
+        x = torch.max(x, dim=1)[0] #(B*T, 512)
+        
+        x = x.view(B, T, 512)
+        
+        # transformer
+        x = self.temporal_transformer_encoder(x)
+        
+        x = torch.mean(x, dim=1) #(B, 512)
+
+        return x
+
+
+class PositionwiseFeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        """
+        Args:
+            d_model (int): The dimension of the model (also the input and output dimension).
+            d_ff (int): The dimension of the feed-forward hidden layer.
+            dropout (float): Dropout probability.
+        """
+        super(PositionwiseFeedForward, self).__init__()
+        self.w_1 = nn.Linear(d_model, d_ff)
+        self.w_2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        """
+        Args:
+            x (Tensor): Input tensor, shape [batch_size, seq_len, d_model]
+
+        Returns:
+            Tensor: Output tensor, shape [batch_size, seq_len, d_model]
+        """
+        return self.w_2(self.dropout(self.relu(self.w_1(x))))
 
 # sinusoidal positional embeds
 

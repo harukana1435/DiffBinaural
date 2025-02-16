@@ -8,6 +8,10 @@ import cv2
 import subprocess as sp
 from threading import Timer
 
+from torchvision.utils import make_grid
+
+import torch
+import glob
 
 def warpgrid(bs, HO, WO, warp=True):
     # meshgrid
@@ -219,3 +223,44 @@ def save_video(path, tensor, fps=25):
 
 def save_audio(path, audio_numpy, sr):
     librosa.output.write_wav(path, audio_numpy, sr)
+
+def save_mel_to_tensorboard(batch_data, output, writer, epoch):
+    pred_mag_imgs = output['pred_mag'][:8]
+    gt_mag_imgs = batch_data['diff_mel'][:8]
+    
+    img_grid = make_grid(pred_mag_imgs, nrow=8)
+    writer.add_image('evalimages',img_grid,epoch)
+    
+    gt_grid = make_grid(gt_mag_imgs, nrow=8)
+    writer.add_image('gtimages', gt_grid, epoch)
+    
+def _nested_map(struct, map_fn):
+  if isinstance(struct, tuple):
+    return tuple(_nested_map(x, map_fn) for x in struct)
+  if isinstance(struct, list):
+    return [_nested_map(x, map_fn) for x in struct]
+  if isinstance(struct, dict):
+    return { k: _nested_map(v, map_fn) for k, v in struct.items() }
+  return map_fn(struct)
+
+
+def load_checkpoint(filepath, device):
+    assert os.path.isfile(filepath)
+    print("Loading '{}'".format(filepath))
+    checkpoint_dict = torch.load(filepath, map_location=device)
+    print("Complete.")
+    return checkpoint_dict
+
+
+def save_checkpoint(filepath, obj):
+    print("Saving checkpoint to {}".format(filepath))
+    torch.save(obj, filepath)
+    print("Complete.")
+
+
+def scan_checkpoint(cp_dir, prefix):
+    pattern = os.path.join(cp_dir, prefix + '??????')
+    cp_list = glob.glob(pattern)
+    if len(cp_list) == 0:
+        return None
+    return sorted(cp_list)[-1]

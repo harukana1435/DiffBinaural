@@ -16,8 +16,8 @@ from librosa.filters import mel as librosa_mel_fn
 
 _, preprocess = clip.load("ViT-B/32", device="cuda")
 
-class BaseDataset(torchdata.Dataset):
-    def __init__(self, list_sample, opt, max_sample=-1, split='train'):
+class GenAudioDataset(torchdata.Dataset):
+    def __init__(self, audio_path, opt):
         # params
         self.num_frames = opt.num_frames
         self.vidRate = opt.vidRate #8 動画のフレームレート
@@ -33,48 +33,110 @@ class BaseDataset(torchdata.Dataset):
         self.num_mels = opt.num_mels
         self.fmin = 0
         self.fmax = opt.audRate//2
-        self.HS = opt.stft_frame // 2 + 1
-        self.WS = (self.audLen + 1) // self.stft_hop
         
         self.mel_basis_cache = {}  # mel_basis をキャッシュするための辞書
         self.hann_window_cache = {}  # hann_window をキャッシュするための辞書
 
         #ディレクトリ
         self.dir_frames= opt.dir_frames
-        self.dir_det_pos=opt.dir_det_pos
-        
-        self.max_sources = opt.max_sources
 
-        self.split = split
         self.seed = opt.seed
         random.seed(self.seed)
         
+        self.split = opt.split
 
         # initialize video transform
         self._init_vtransform()
-
-        # list_sample can be a python list or a csv file of list
-        if isinstance(list_sample, str):
-            self.list_sample = self.get_audio_filelist(list_sample)
+        
+        
+        
+        self.audio_path=audio_path
+        self.basename = os.path.splitext(os.path.basename(audio_path))[0]
+        
+        self.audio, sr = self._load_audio_file(audio_path)
+        # resample
+        if sr != self.audRate:
+            print('resmaple {}->{}'.format(sr, self.audRate))
+            audio = librosa.resample(audio, sr, self.audRate)
+        
+        self.genstart_list=[]
+        
+        sliding_window_start = 0
+        self.generate_stride = self.audLen//4
+        while sliding_window_start+self.audLen <= self.audio.shape[-1]:
+            self.genstart_list.append(sliding_window_start)
+            sliding_window_start+=self.generate_stride
+        if sliding_window_start + self.audLen > self.audio.shape[-1]:
+            self.genstart_list.append(sliding_window_start)
+            padding_length = (sliding_window_start + self.audLen) - self.audio.shape[-1]
+            self.audio = np.pad(self.audio,((0, 0), (0, padding_length)), 'constant')
             
-        elif isinstance(list_sample, list):
-            self.list_sample = list_sample
-        else:
-            raise('Error list_sample!')
+        self.audio = torch.FloatTensor(self.audio)
+        left_audio, right_audio = self.audio[0], self.audio[1]
+        self.mix_audio = torch.FloatTensor(((left_audio + right_audio) / 2).unsqueeze(0))
+        self.diff_audio = torch.FloatTensor(right_audio.unsqueeze(0))
 
-        if self.split == 'train':
-            self.list_sample *= opt.dup_trainset # デフォルトはdup_trainsetは5に設定してある
-            random.shuffle(self.list_sample)
-
-        if max_sample > 0:
-            self.list_sample = self.list_sample[0:max_sample]
-
-        num_sample = len(self.list_sample)
+        num_sample = len(self.genstart_list)
         assert num_sample > 0
-        print('# samples: {}'.format(num_sample))
+        print('# {} samples: {}'.format(self.basename, num_sample))
 
     def __len__(self):
-        return len(self.list_sample)
+        return len(self.genstart_list)
+    
+    
+    def __getitem__(self, index):
+        frames = None
+        audio_path = None
+
+        start_point = self.genstart_list[index]    
+        
+        mix_audio = self.mix_audio[:, start_point:start_point+self.audLen]
+    
+        # メルスペクトログラムの計算
+        mix_mel = self.mel_spectrogram(mix_audio, self.fft_size, self.num_mels,
+                                        self.audRate, self.stft_hop, self.stft_frame, self.fmin, self.fmax,
+                                        center=False)
+
+        diff_audio = self.diff_audio[:, start_point:start_point+self.audLen]
+            
+        diff_mel = self.mel_spectrogram(diff_audio, self.fft_size, self.num_mels,
+                                              self.audRate, self.stft_hop, self.stft_frame, self.fmin, self.fmax,
+                                              center=False)
+
+        #ビデオフレーム、3dマップの番号を抽出
+        start_time = start_point/self.audRate
+        end_time = (start_point+self.audLen)/self.audRate
+
+        start_frame = int(start_time * self.vidRate)
+        end_frame = int(end_time* self.vidRate)
+        
+        frame_indices = np.linspace(start_frame, end_frame, self.num_frames, dtype=int)
+        even_frame_indices = []
+        for idx in frame_indices:
+            if idx == 0:
+                even_frame_indices.append(idx+2)
+            elif idx % 2 == 0:
+                even_frame_indices.append(idx)
+            else:
+                even_frame_indices.append(idx - 1 if idx > 1 else 2)  # 偶数に丸める
+
+        #読み込み
+        
+        frame_paths = [
+            os.path.join(self.dir_frames, f"{self.basename}.mp4", f"{i:06d}.jpg") for i in even_frame_indices
+        ]
+        
+        try:
+    # フレームパスを生成して読み込む
+            frames = self._load_frames(frame_paths)
+        except Exception as e:
+            print(f"Error loading frames for basename: {self.basename}")
+            print(f"Details: {e}")
+            frames = None  # エラー時は None を返すなどの処理
+
+
+        ret_dict = {'mix_mel': mix_mel, 'diff_mel':diff_mel, 'frames': frames, 'start_time_frame':start_point//self.stft_hop, 'total_time_frame':self.audio.shape[-1]//self.stft_hop}
+        return ret_dict
 
     # video transform funcs
     def _init_vtransform(self):
@@ -94,7 +156,6 @@ class BaseDataset(torchdata.Dataset):
         transform_list.append(vtransforms.Normalize(mean, std))
         transform_list.append(vtransforms.Stack())
         self.vid_transform = transforms.Compose(transform_list)
-        self.det_transform = transforms.Compose([vtransforms.Stack()])
         self.clip_transform = transforms.Compose([vtransforms.Stack()])
 
     # image transform funcs, deprecated
@@ -132,6 +193,13 @@ class BaseDataset(torchdata.Dataset):
             frames.append(self._load_frame(path))
         frames = self.vid_transform(frames) #(B, L, C, H, W)
         return frames
+    
+    
+    def _load_pointclouds(self, paths):
+        pointclouds = []
+        for path in paths:
+            pointclouds.append(self._load_pointcloud(path))
+        return pointclouds
 
     def _load_frames_clip(self, paths):
         frames = []
@@ -140,44 +208,41 @@ class BaseDataset(torchdata.Dataset):
         frames = self.clip_transform(frames)
         return frames
 
-    def _load_frames_det(self, paths, det_data):
+    def _load_frames_det(self, paths, path_frames_ids,  path_frames_det):
+        det_res = np.load(path_frames_det)
         frames = []
-        mask = np.array([False]*self.max_sources)
         N = len(paths)
-        sources_num = len(det_data[0])
         for n in range(N):
-            source_frames = []
             path = paths[n]
-            for source in range(self.max_sources):
-                if source <= sources_num-1:
-                    bb = det_data[n][source]
-                    if not np.array_equal(bb, [0, 0, 0, 0]):
-                        source_frames.append(self._load_frame_det(path, bb))
-                        mask[source] = False
-                    else:
-                        source_frames.append(Image.new('RGB', (self.imgSize, self.imgSize), (0, 0, 0)))
-                        mask[source] = True
-                else:
-                    source_frames.append(Image.new('RGB', (self.imgSize, self.imgSize), (0, 0, 0)))
-                    mask[source] = True
-            source_frames = self.vid_transform(source_frames)
-            frames.append(source_frames)
-        frames = self.det_transform(frames)
-        return frames, mask
+            id = path_frames_ids[n]
+            frames.append(self._load_frame_det(path, id, det_res))
+        frames = self.vid_transform(frames)
+        return frames
 
 
-    def _load_frame_det(self, path, bb):
+    def _load_frame_det(self, path, id, det_res):
+
         # load image
         img = Image.open(path).convert('RGB')
+
         # get box
-        img = img.crop((bb[0], bb[1], bb[2], bb[3]))
-        #print(bb)
+        idx = np.where(det_res[:, 0] == id)
+        if len(idx[0])!=0:
+            n = np.argmax(det_res[idx, 2], axis=1)
+            bb = det_res[idx[0][n[0]], 3:]
+            # crop image
+            img = img.crop((bb[0], bb[1], bb[2], bb[3]))
         return img
 
     def _load_frame(self, path):
         img = Image.open(path).convert('RGB')
         return img
     
+    def _load_pointcloud(self, path):
+        pointcloud = np.load(path)
+        pointcloud = pointcloud["depth_map_3d"]
+        reshaped_pointcloud = pointcloud.reshape(-1, 3)
+        return reshaped_pointcloud
 
     def _stft(self, audio):
         spec = librosa.stft(
