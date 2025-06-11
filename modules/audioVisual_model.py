@@ -10,7 +10,7 @@ class AudioVisualModel(torch.nn.Module):
     def name(self):
         return 'AudioVisualModel'
 
-    def __init__(self, dim=128, input_nc=1, output_nc=1):
+    def __init__(self, dim=128, input_nc=2, output_nc=2):
         super(AudioVisualModel, self).__init__()
 
         #initialize model and criterions

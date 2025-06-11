@@ -1,6 +1,7 @@
 import os
 import shutil
 
+from matplotlib import pyplot as plt
 import numpy as np
 import librosa
 import cv2
@@ -12,6 +13,9 @@ from torchvision.utils import make_grid
 
 import torch
 import glob
+
+def convert_to_db(mag, eps=1e-10):
+    return 20 * np.log10(np.maximum(mag, eps))
 
 def warpgrid(bs, HO, WO, warp=True):
     # meshgrid
@@ -224,9 +228,32 @@ def save_video(path, tensor, fps=25):
 def save_audio(path, audio_numpy, sr):
     librosa.output.write_wav(path, audio_numpy, sr)
 
-def save_mel_to_tensorboard(batch_data, output, writer, epoch):
+def save_mel_to_tensorboard(batch_data, outputs, writer, epoch):
+    # 先頭8サンプル（形状は (8, 2, 80, 80)）を取得
+    pred_mag_imgs = outputs['pred_mag'][:8]
+    gt_mag_imgs = outputs['gt_mag'][:8]
+    
+    # 左右チャンネルを分割 (各サンプルについて、左:0, 右:1)
+    pred_left = pred_mag_imgs[:, 0:1, :, :]   # (8, 1, 80, 80)
+    pred_left_grid = make_grid(pred_left, nrow=8)
+    writer.add_image('eval_left', pred_left_grid, epoch)
+    
+    pred_right = pred_mag_imgs[:, 1:2, :, :]   # (8, 1, 80, 80)
+    pred_right_grid = make_grid(pred_right, nrow=8)
+    writer.add_image('eval_right', pred_right_grid, epoch)
+    
+    gt_left = gt_mag_imgs[:, 0:1, :, :]         # (8, 1, 80, 80)
+    gt_left_grid = make_grid(gt_left, nrow=8)
+    writer.add_image('gt_left', gt_left_grid, epoch)
+    
+    gt_right = gt_mag_imgs[:, 1:2, :, :]         # (8, 1, 80, 80)
+    gt_right_grid = make_grid(gt_right, nrow=8)
+    writer.add_image('gt_right', gt_right_grid, epoch)
+
+def save_mel_to_tensorboard2(batch_data, output, writer, epoch):
     pred_mag_imgs = output['pred_mag'][:8]
-    gt_mag_imgs = batch_data['diff_mel'][:8]
+    gt_mag_imgs = batch_data['binaural_mel'][:8]
+    
     
     img_grid = make_grid(pred_mag_imgs, nrow=8)
     writer.add_image('evalimages',img_grid,epoch)
@@ -264,3 +291,48 @@ def scan_checkpoint(cp_dir, prefix):
     if len(cp_list) == 0:
         return None
     return sorted(cp_list)[-1]
+
+def min_max_normalize(x, x_min=None, x_max=None):
+    """
+    入力配列 x を min-max 正規化します。
+    x_min と x_max が指定されていない場合は、x の最小値と最大値を使用します。
+    
+    Args:
+        x (np.ndarray): 正規化するデータ
+        x_min (float, optional): 使用する最小値。指定がなければ x の最小値を使用
+        x_max (float, optional): 使用する最大値。指定がなければ x の最大値を使用
+    
+    Returns:
+        x_norm (np.ndarray): 0〜1に正規化されたデータ
+        used_min (float): 正規化に実際に使用した最小値
+        used_max (float): 正規化に実際に使用した最大値
+    """
+    if x_min is None:
+        x_min = np.min(x)
+    if x_max is None:
+        x_max = np.max(x)
+    
+    x_norm = (x - x_min) / (x_max - x_min)
+    return x_norm
+
+
+def invert_min_max_normalize(x_norm, x_min, x_max):
+    """
+    min-max 正規化を元のスケールに戻します。
+    
+    Args:
+        x_norm (np.ndarray): 正規化されたデータ（0〜1の範囲）
+        x_min (float): 正規化に使用した最小値
+        x_max (float): 正規化に使用した最大値
+        
+    Returns:
+        x_original (np.ndarray): 元のスケールに戻したデータ
+    """
+    x_original = x_norm * (x_max - x_min) + x_min
+    return x_original
+
+# 正規化関数（提供された関数そのまま）
+def normalize(samples, desired_rms=0.1, eps=1e-4):
+    rms = np.maximum(eps, np.sqrt(np.mean(samples**2)))
+    samples = samples * (desired_rms / rms)
+    return samples

@@ -5,6 +5,7 @@ import time
 import json
 
 # Numerical libs
+from matplotlib import pyplot as plt
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -22,7 +23,7 @@ from dataset.fairplay_pos_right import FairPlayPosRightDataset
 from modules import models
 from diffusion_utils import diffusion_pytorch
 from utils.helpers import AverageMeter, magnitude2heatmap, \
-    istft_reconstruction, warpgrid, makedirs, save_mel_to_tensorboard, _nested_map, save_checkpoint,load_checkpoint,scan_checkpoint
+    istft_reconstruction, warpgrid, makedirs, save_mel_to_tensorboard,save_mel_to_tensorboard2, _nested_map, save_checkpoint,load_checkpoint,scan_checkpoint, min_max_normalize, invert_min_max_normalize
 import warnings
 # UserWarningとFutureWarningを無視する
 #warnings.filterwarnings("ignore", category=UserWarning)
@@ -42,11 +43,13 @@ class NetWrapper(torch.nn.Module):
             loss_type = 'l1',    # L1 or L2
             objective = 'pred_noise', # pred_noise or pred_x0
             beta_schedule = 'cosine', #linear or cosine or sigmoid 64×64の画像なので、コサインとした
-            ddim_sampling_eta = 1.,
+            ddim_sampling_eta = 0,
             auto_normalize = False,
             min_snr_loss_weight=False
         )
-        self.scale_factor = 0.15
+        self.max = 0.0
+        self.min = -80.0
+        self.scale_factor = 0.167
 
     def move_to_device(self, device):
             """
@@ -68,70 +71,76 @@ class NetWrapper(torch.nn.Module):
 
     def forward(self, batch_data, args):
         mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
-        diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
+        binaural_mel = batch_data['binaural_mel'] # (B, C, F, T) C=1, F=64, T=64
         frames = batch_data['frames'] #(B, C, L, N, H, W) L=5, N=4, C=3, H=224, W=224 
         pos = batch_data['pos_data'] # (B, L, N, 3) 距離、仰角、方位角の順番
         mask = batch_data['mask'] #(B, L, N)
-        
-        B = mix_mel.size(0)
-        T = mix_mel.size(2)
+        pos_2d = batch_data['2d_pos_data'] #(B, L, N, 2)
 
+        print(pos_2d.shape, binaural_mel.shape, flush=True)
+        
         if args.weighted_loss:
             weight = mix_mel
             # weight = torch.clamp(weight, 1e-3, 10)
-            weight = weight > 1e-3 #mixe_melの値が1e-3以上のものにweightをつけている
-        else: #こっち
+            weight = weight > 1e-3 # mix_melの値が1e-3以上のものにweightをつけている
+        else: # こっち
             weight = torch.ones_like(mix_mel)
 
         # LOG magnitude
-        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
-        log_diff_mel = torch.log1p(diff_mel) * self.scale_factor #正規化
+        #mix_mel = min_max_normalize(mix_mel, self.min, self.max)
+        #binaural_mel = min_max_normalize(binaural_mel, self.min, self.max) #正規化
+        
+        mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
+        binaural_mel = torch.log1p(binaural_mel) * self.scale_factor #正規化
 
         # detach
-        log_mix_mel = log_mix_mel.detach()
-        log_diff_mel = log_diff_mel.detach()
+        mix_mel = mix_mel.detach()
+        binaural_mel = binaural_mel.detach()
 
         # Frame feature (conditions)
-        feat_frames = self.net_frame.forward_multiframe(frames, pos, mask) #(B, C)
+        feat_frames = self.net_frame.forward_multiframe(frames, pos_2d, mask) #(B, C)
         
         # Loss
-        loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
+        loss_mel = self.sampler(binaural_mel, [mix_mel, feat_frames], cfg=False, log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
 
         return loss_mel
+
 
 
     def sample(self, batch_data, args): #サンプルのときは最後に、hifiganに入れられるように正規化しないといけないが、hifigan側でやったほうがいいかも
         model_device = next(self.net_frame.parameters()).device
         batch_data = _nested_map(batch_data, lambda x: x.to(model_device) if isinstance(x, torch.Tensor) else x)
-        mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
-        diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
+        mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=80, T=80
+        binaural_mel = batch_data['binaural_mel'] # (B, C, F, T) C=2, F=80, T=80
         frames = batch_data['frames'] #(B, L, C, H, W) L=4, C=3, H=224, W=224
         pos = batch_data['pos_data'] # (B, L, N, 3) 距離、仰角、方位角の順番
         mask = batch_data['mask'] #(B, L, N)
-        
-        
+        pos_2d = batch_data['2d_pos_data'] #(B, L, N, 2)
 
-        B = mix_mel.size(0)
-        T = mix_mel.size(2)
 
-        # LOG magnitude
-        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
+
+        # magnitude
+        #mix_mel = min_max_normalize(mix_mel, self.min, self.max) #正規化
+        mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
         
         # detach
-        log_mix_mel = log_mix_mel.detach()
+        mix_mel = mix_mel.detach()
+        binaural_mel = binaural_mel.detach()
         
         # Frame feature (conditions)
-        feat_frames = self.net_frame.forward_multiframe(frames, pos, mask) #(B, C)
+        feat_frames = self.net_frame.forward_multiframe(frames, pos_2d, mask) #(B, C)
         
         # ddim sampling
-        preds = self.sampler.ddim_sample(condition=[log_mix_mel, feat_frames], return_all_timesteps = True, silence_mask_sampling=True)
+        preds = self.sampler.ddim_sample(condition=[mix_mel, feat_frames], return_all_timesteps = True, silence_mask_sampling=True)
 
         pred = preds[:, -1, ...]
-
+        
         pred = pred / self.scale_factor
-        pred_mag = torch.exp(pred.abs()) - 1
+        pred = torch.exp(pred.abs()) - 1
 
-        return {'pred_mag': pred_mag, 'gt_mag': diff_mel}
+        #pred = invert_min_max_normalize(pred, self.min, self.max)
+        
+        return {'pred_mag': pred, 'gt_mag': binaural_mel}
 
 
 def calc_metrics(batch_data, outputs, args):
@@ -139,8 +148,10 @@ def calc_metrics(batch_data, outputs, args):
     l2_distance_meter = AverageMeter()
 
     # 真のメルスペクトログラムと予測を取得
-    gt_mag = batch_data['diff_mel']
+    gt_mag = outputs['gt_mag']
     pred_mag = outputs['pred_mag']
+    
+    
     
     gt_mag = gt_mag.to(pred_mag.device)
 
@@ -189,7 +200,9 @@ def evaluate(netWrapper, loader, history, epoch, args, writer):
     history['val']['epoch'].append(epoch)
     history['val']['mel_l2'].append(mel_l2.average())
     
+    
     save_mel_to_tensorboard(batch_data, outputs, writer, epoch)
+    
     
     if args.mode != "eval":
         writer.add_scalar('eval mel_l2',
@@ -312,9 +325,9 @@ def main(args):
     nets = (net_frame, net_unet)
 
     # Dataset and Loader
-    dataset_train = FairPlayPosRightDataset(
+    dataset_train = FairPlayPosDataset(
         args.list_train, args, split='train')
-    dataset_val = FairPlayPosRightDataset(
+    dataset_val = FairPlayPosDataset(
         args.list_val, args, max_sample=args.num_val, split=args.split)
 
     loader_train = torch.utils.data.DataLoader(

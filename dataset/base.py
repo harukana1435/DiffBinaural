@@ -13,8 +13,7 @@ import soundfile as sf
 import clip
 from . import video_transforms as vtransforms
 from librosa.filters import mel as librosa_mel_fn
-
-_, preprocess = clip.load("ViT-B/32", device="cuda")
+from utils.helpers import convert_to_db
 
 class BaseDataset(torchdata.Dataset):
     def __init__(self, list_sample, opt, max_sample=-1, split='train'):
@@ -133,12 +132,6 @@ class BaseDataset(torchdata.Dataset):
         frames = self.vid_transform(frames) #(B, L, C, H, W)
         return frames
 
-    def _load_frames_clip(self, paths):
-        frames = []
-        for path in paths:
-            frames.append(preprocess(Image.open(path)))
-        frames = self.clip_transform(frames)
-        return frames
 
     def _load_frames_det(self, paths, det_data):
         frames = []
@@ -188,6 +181,7 @@ class BaseDataset(torchdata.Dataset):
 
     def _load_audio_file(self, path):
         audio_raw, rate = librosa.load(path, sr=self.audRate, mono=False)
+        #print(torch.FloatTensor(audio_raw).shape, flush=True)
         return audio_raw, rate
 
     def _load_audio(self, path):
@@ -203,6 +197,9 @@ class BaseDataset(torchdata.Dataset):
         if audio.shape[-1] < self.audLen:
             audio = torch.nn.functional.pad(audio, (0, self.audLen - audio.shape[-1]), 'constant')
             audio_start = 0
+        elif self.split == 'val':
+            audio_start = audio.shape[-1]//2
+            audio = audio[:, audio_start:audio_start+self.audLen]
         else:
             max_audio_start = audio.shape[-1] - self.audLen
             audio_start = random.randint(0, max_audio_start)
@@ -210,7 +207,34 @@ class BaseDataset(torchdata.Dataset):
 
         return audio, audio_start
 
-    def mel_spectrogram(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
+
+
+
+    def mel_spectrogram(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size):
+        # mel_basis と hann_window をキャッシュから取得
+        mel_key = str(y.device)
+        if mel_key not in self.mel_basis_cache:
+            mel = librosa_mel_fn(sampling_rate, n_fft, num_mels)
+            self.mel_basis_cache[mel_key] = torch.from_numpy(mel).float().to(y.device)
+        
+        if mel_key not in self.hann_window_cache:
+            self.hann_window_cache[mel_key] = torch.hann_window(win_size).to(y.device)
+
+        # STFTを計算する
+        spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=self.hann_window_cache[mel_key],
+                          center=True, pad_mode='reflect', normalized=False, onesided=True, return_complex=True)
+
+        # 複素数の絶対値を計算する
+        spec = torch.abs(spec)
+
+        # メルスペクトログラムを計算する
+        mel_spec = torch.matmul(self.mel_basis_cache[mel_key], spec)
+        
+        #mel_spec = librosa.amplitude_to_db(mel_spec, ref=np.max)
+
+        return mel_spec
+    
+    def mel_spectrogram_origin(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin=0, fmax=11025, center=False):
         # 入力の音声が-1〜1に収まっていない場合に警告
         if torch.min(y) < -1.:
             print('min value is ', torch.min(y))
@@ -232,12 +256,43 @@ class BaseDataset(torchdata.Dataset):
 
         # STFTを計算する
         spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=self.hann_window_cache[mel_key],
-                          center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
+                          center=True, pad_mode='reflect', normalized=False, onesided=True, return_complex=True)
 
         # 複素数の絶対値を計算する
-        spec = torch.sqrt(spec.pow(2).sum(-1) + (1e-9))
+        spec = torch.abs(spec)
 
         # メルスペクトログラムを計算する
         spec = torch.matmul(self.mel_basis_cache[mel_key], spec)
 
         return spec
+
+    def normalize_and_pad_det_data(self, det_data, O, frame_width, frame_height):
+        """
+        det_data: list of ndarray, 各要素 shape=(o_i, 4)  (o_i <= O)
+        O: int, 各フレームの音源数（最大数、例: 4）
+        frame_width: int
+        frame_height: int
+
+        Returns:
+            ndarray, shape=(N, O, 4)  # (cx, cy, w, h)
+        """
+        normed_padded = []
+        for arr in det_data:
+            arr = arr.astype(np.float32)
+            # 正規化
+            arr[:, [0, 2]] /= frame_width
+            arr[:, [1, 3]] /= frame_height
+            # パディング
+            if arr.shape[0] < O:
+                pad = np.zeros((O - arr.shape[0], 4), dtype=np.float32)
+                arr = np.vstack([arr, pad])
+            elif arr.shape[0] > O:
+                arr = arr[:O]
+            # (x1, y1, x2, y2) → (cx, cy, w, h)
+            cx = (arr[:, 0] + arr[:, 2]) / 2.0
+            cy = (arr[:, 1] + arr[:, 3]) / 2.0
+            w = arr[:, 2] - arr[:, 0]
+            h = arr[:, 3] - arr[:, 1]
+            arr_cxcywh = np.stack([cx, cy, w, h], axis=-1)
+            normed_padded.append(arr_cxcywh)
+        return np.stack(normed_padded, axis=0)  # shape=(N, O, 4)

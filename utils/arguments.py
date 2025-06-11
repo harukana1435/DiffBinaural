@@ -28,7 +28,7 @@ class ArgParser(object):
                             help="val or test")
         
         parser.add_argument('--decay_factor', default=0.94, type=float)
-        parser.add_argument('--learning_rate_decrease_itr', default=10, type=int)
+        parser.add_argument('--learning_rate_decrease_itr', default=50, type=int)
         
         parser.add_argument('--max_sources', default=4, type=int)
 
@@ -54,13 +54,16 @@ class ArgParser(object):
                             help="stft frame length")
         parser.add_argument('--stft_hop', default=256, type=int,
                             help="stft hop length")
-        parser.add_argument('--num_mels', default=64, type=int,
+        parser.add_argument('--num_mels', default=80, type=int,
                             help="nums of mel")
 
         parser.add_argument('--imgSize', default=224, type=int,
                             help='size of input frame')
         parser.add_argument('--vidRate', default=8, type=float,
                             help='video frame sampling rate')
+        
+        parser.add_argument('--pos_type', default="3D", type=str,
+                            help='pos type')
 
         # Misc arguments
         parser.add_argument('--seed', default=1234, type=int,
@@ -117,7 +120,8 @@ class ArgParser(object):
 
         parser.add_argument('--mode', default='eval', help="train/eval")
         parser.add_argument('--list_test', default='/home/yeyx/Data/Audio-Visual-Spatial-Audio-Sepration/data/solo_train.csv')
-        parser.add_argument('--output_dir', default='./generated_files')
+        parser.add_argument('--output_dir_left', default='./generated_files')
+        parser.add_argument('--output_dir_right', default='./generated_files')
         self.parser = parser
 
     def print_arguments(self, args):

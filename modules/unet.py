@@ -168,11 +168,11 @@ class ResnetBlock(nn.Module):
 class Unet(nn.Module):
     def __init__(
         self,
-        dim, # →　128
-        init_dim = None, 
-        out_dim = None, # →　1
+        dim, # →　64
+        init_dim = None,  # →64
+        out_dim = None, # →　2
         dim_mults=(1, 2, 4),
-        channels = 3, # →　1
+        channels = 3, # →　2
         self_condition = False,
         resnet_block_groups = 8,
         learned_variance = False,
@@ -183,7 +183,7 @@ class Unet(nn.Module):
 
         self.channels = channels # 1
         self.self_condition = self_condition #  Trueで確定
-        input_channels = channels * (2 if self_condition else 1) # 入力は2つのスペクトログラムだから
+        input_channels = channels+1 if self_condition else channels # 入力は2つのスペクトログラムだから
 
         init_dim = default(init_dim, dim) #init_dimが定義されてないので、128となっている
         self.init_conv = nn.Conv2d(input_channels, init_dim, 1) #2チャンネルを128チャンネルに線形変換している (B, 2, 128, 128)

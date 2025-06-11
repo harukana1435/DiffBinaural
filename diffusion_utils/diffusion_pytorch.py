@@ -244,10 +244,10 @@ class GaussianDiffusion(nn.Module):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def model_predictions(self, x, t, condition, x_self_cond = None, clip_x_start = False):
+    def model_predictions(self, x, t, condition, x_self_cond = None, clip_x_start = True):
         model_output = self.model(x, t, condition)
         maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
-        # maybe_clip = partial(torch.clamp, min = 0., max = 1.) if clip_x_start else identity
+        #maybe_clip = partial(torch.clamp, min = 0., max = 1.) if clip_x_start else identity
 
         if self.objective == 'pred_noise':
             pred_noise = model_output
@@ -317,10 +317,10 @@ class GaussianDiffusion(nn.Module):
         time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (0, -1)]
 
         mix = condition[0].detach()
+        mix = mix.repeat(1,2,1,1)
         batch = mix.shape[0]
         silence_mask = (mix < threshold).float()
     
- 
         img = torch.randn_like(mix).to(device)
         mix_t = img + mix
         condition.append(mix_t)
@@ -437,11 +437,7 @@ class GaussianDiffusion(nn.Module):
         x = self.q_sample(x_start = x_start, t = t, noise = noise) #ノイズ付きのxがくる
         mix_t = self.q_sample(x_start = condition[0], t = t, noise = noise) #mixのスペクトログラムに対して、ノイズを加えたものがくる
 
-        x_self_cond = None
-        if self.self_condition and random() < 0.5: #ここは実行されてない
-            with torch.no_grad():
-                x_self_cond = self.model_predictions(x, t).pred_x_start
-                x_self_cond.detach()
+
 
         # classifer free guidance
         if cfg: #条件を時々なしにする　ここは実行されない
@@ -450,6 +446,7 @@ class GaussianDiffusion(nn.Module):
             mix[idx] = 0
             visual_feature[idx] = 0
             condition = [mix, visual_feature]
+
 
         # predict and take gradient step
         condition.append(mix_t)
@@ -465,10 +462,7 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f'unknown objective {self.objective}')
 
-        if log:
-           loss = torch.log1p(weight * self.loss_fn(model_out, target, reduction = 'none'))
-        else: #ここが実行される
-            loss = weight * self.loss_fn(model_out, target, reduction = 'none')
+        loss = self.loss_fn(model_out, target, reduction = 'none')
         loss = reduce(loss, 'b ... -> b (...)', 'mean')
 
         loss = loss * extract(self.p2_loss_weight, t, loss.shape)

@@ -1,11 +1,12 @@
 import os
 import random
+from matplotlib import pyplot as plt
 import numpy as np
 import csv
 from .base import BaseDataset
 import torchaudio
 import torch
-
+from utils.helpers import normalize
 
 class FairPlayPosDataset(BaseDataset):
     def __init__(self, list_sample, opt, **kwargs):
@@ -14,8 +15,6 @@ class FairPlayPosDataset(BaseDataset):
 
 
     def __getitem__(self, index):
-        frames = None
-        audio_path = None
 
         audio_path = self.list_sample[index]    
         
@@ -24,6 +23,7 @@ class FairPlayPosDataset(BaseDataset):
         try:
             # 音声の抽出
             audio, start_point = self._load_audio(audio_path)
+            #audio = normalize(audio)
             audio = torch.FloatTensor(audio)
         except Exception as e:
             print(f"Error loading audio for basename: {basename}")
@@ -34,26 +34,28 @@ class FairPlayPosDataset(BaseDataset):
         if audio is not None: 
             left_audio, right_audio = audio[0], audio[1]
             mix_audio = torch.FloatTensor(((left_audio + right_audio) / 2).unsqueeze(0))
-            diff_audio = torch.FloatTensor(((left_audio - right_audio) / 2).unsqueeze(0))
+            left_audio = torch.FloatTensor(left_audio).unsqueeze(0)
+            right_audio = torch.FloatTensor(right_audio).unsqueeze(0)
 
             try:
                 # メルスペクトログラムの計算
-                mix_mel = self.mel_spectrogram(mix_audio, self.fft_size, self.num_mels,
-                                                self.audRate, self.stft_hop, self.stft_frame, self.fmin, self.fmax,
-                                                center=False)
+                mix_mel = self.mel_spectrogram_origin(mix_audio, self.fft_size, self.num_mels, self.audRate, self.stft_hop, self.stft_frame)
+                #mix_mel = self.mel_spectrogram_origin(mix_audio, self.fft_size, self.num_mels, self.audRate, self.stft_hop, self.stft_frame)
             except Exception as e:
                 print(f"Error calculating mel spectrogram for basename: {basename}")
                 print(f"Details: {e}")
                 mix_mel = None  # エラー時は None を設定
 
             try:
-                diff_mel = self.mel_spectrogram(diff_audio, self.fft_size, self.num_mels,
-                                                      self.audRate, self.stft_hop, self.stft_frame, self.fmin, self.fmax,
-                                                      center=False)
+                left_mel = self.mel_spectrogram_origin(left_audio, self.fft_size, self.num_mels, self.audRate, self.stft_hop, self.stft_frame)
+                right_mel = self.mel_spectrogram_origin(right_audio, self.fft_size, self.num_mels, self.audRate, self.stft_hop, self.stft_frame)
+                #left_mel = self.mel_spectrogram_origin(left_audio, self.fft_size, self.num_mels, self.audRate, self.stft_hop, self.stft_frame)
+                #right_mel = self.mel_spectrogram_origin(right_audio, self.fft_size, self.num_mels, self.audRate, self.stft_hop, self.stft_frame)
             except Exception as e:
                 print(f"Error calculating diff audio mel spectrogram for basename: {basename}")
                 print(f"Details: {e}")
-                diff_mel = None  # エラー時は None を設定
+                left_mel = None  # エラー時は None を設定
+                right_mel = None  # エラー時は None を設定
 
         #ビデオフレーム、3dマップの番号を抽出
         start_time = start_point/self.audRate
@@ -93,11 +95,18 @@ class FairPlayPosDataset(BaseDataset):
         
         pos_data = [det_pos_data['pos_3d'][i//2-1] for i in even_frame_indices]
         pos_data = np.array([np.pad(data, ((0, self.max_sources-data.shape[0]),(0,0)), constant_values=0) for data in pos_data])
-            
-            
+        
+        
 
-        ret_dict = {'mix_mel': mix_mel, 'diff_mel':diff_mel, 'frames': frames,
-                    'pos_data':pos_data, 'mask':mask}
+        binaural_mel = np.concatenate((left_mel,right_mel), axis=0)
+
+        normed_det_data = self.normalize_and_pad_det_data(det_data, self.max_sources, 1280, 720)
+
+
+
+        ret_dict = {'mix_mel': mix_mel, 'binaural_mel':binaural_mel, 'frames': frames,
+                    'pos_data':pos_data, 'mask':mask, '2d_pos_data':normed_det_data[:,:,:2]}
+        
         return ret_dict
     
     

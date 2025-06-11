@@ -75,9 +75,8 @@ class GenAudioPosDataset(torchdata.Dataset):
             self.audio = np.pad(self.audio,((0, 0), (0, padding_length)), 'constant')
             
         self.audio = torch.FloatTensor(self.audio)
-        left_audio, right_audio = self.audio[0], self.audio[1]
-        self.mix_audio = torch.FloatTensor(((left_audio + right_audio) / 2).unsqueeze(0))
-        self.diff_audio = torch.FloatTensor(right_audio.unsqueeze(0))
+        self.mix_audio = torch.FloatTensor(((self.audio[0] + self.audio[1]) / 2).unsqueeze(0))
+        self.left_audio, self.right_audio = self.audio[0].unsqueeze(0), self.audio[1].unsqueeze(0)
         
 
         num_sample = len(self.genstart_list)
@@ -97,15 +96,18 @@ class GenAudioPosDataset(torchdata.Dataset):
         mix_audio = self.mix_audio[:, start_point:start_point+self.audLen]
     
         # メルスペクトログラムの計算
-        mix_mel = self.mel_spectrogram(mix_audio, self.fft_size, self.num_mels,
-                                        self.audRate, self.stft_hop, self.stft_frame, self.fmin, self.fmax,
-                                        center=False)
+        mix_mel = self.mel_spectrogram_origin(mix_audio, self.fft_size, self.num_mels,
+                                        self.audRate, self.stft_hop, self.stft_frame, 0, 11025)
 
-        diff_audio = self.diff_audio[:, start_point:start_point+self.audLen]
+        left_audio = self.left_audio[:, start_point:start_point+self.audLen]
             
-        diff_mel = self.mel_spectrogram(diff_audio, self.fft_size, self.num_mels,
-                                              self.audRate, self.stft_hop, self.stft_frame, self.fmin, self.fmax,
-                                              center=False)
+        left_mel = self.mel_spectrogram_origin(left_audio, self.fft_size, self.num_mels,
+                                              self.audRate, self.stft_hop, self.stft_frame, 0, 11025)
+        
+        right_audio = self.right_audio[:, start_point:start_point+self.audLen]
+        
+        right_mel = self.mel_spectrogram_origin(right_audio, self.fft_size, self.num_mels,
+                                              self.audRate, self.stft_hop, self.stft_frame, 0, 11025)
 
         #ビデオフレーム、3dマップの番号を抽出
         start_time = start_point/self.audRate
@@ -145,9 +147,11 @@ class GenAudioPosDataset(torchdata.Dataset):
         
         pos_data = [det_pos_data['pos_3d'][i//2-1] for i in even_frame_indices]
         pos_data = np.array([np.pad(data, ((0, self.max_sources-data.shape[0]),(0,0)), constant_values=0) for data in pos_data])
-            
 
-        ret_dict = {'mix_mel': mix_mel, 'diff_mel':diff_mel, 'frames': frames,
+            
+        binaural_mel = np.concatenate((left_mel, right_mel), axis=0)
+
+        ret_dict = {'mix_mel': mix_mel, 'binaural_mel':binaural_mel, 'frames': frames,
                     'pos_data':pos_data, 'mask':mask, 'start_time_frame':start_point//self.stft_hop, 'total_time_frame':self.audio.shape[-1]//self.stft_hop}
         return ret_dict
 
@@ -285,7 +289,31 @@ class GenAudioPosDataset(torchdata.Dataset):
 
         return audio, audio_start
 
-    def mel_spectrogram(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
+    def mel_spectrogram(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size):
+        # mel_basis と hann_window をキャッシュから取得
+        mel_key = str(y.device)
+        if mel_key not in self.mel_basis_cache:
+            mel = librosa_mel_fn(sampling_rate, n_fft, num_mels)
+            self.mel_basis_cache[mel_key] = torch.from_numpy(mel).float().to(y.device)
+        
+        if mel_key not in self.hann_window_cache:
+            self.hann_window_cache[mel_key] = torch.hann_window(win_size).to(y.device)
+
+        # STFTを計算する
+        spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=self.hann_window_cache[mel_key],
+                          center=True, pad_mode='reflect', normalized=False, onesided=True, return_complex=True)
+
+        # 複素数の絶対値を計算する
+        spec = torch.abs(spec)
+
+        # メルスペクトログラムを計算する
+        mel_spec = torch.matmul(self.mel_basis_cache[mel_key], spec)
+        
+        #mel_spec = librosa.amplitude_to_db(mel_spec, ref=np.max)
+
+        return mel_spec
+
+    def mel_spectrogram_origin(self, y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
         # 入力の音声が-1〜1に収まっていない場合に警告
         if torch.min(y) < -1.:
             print('min value is ', torch.min(y))

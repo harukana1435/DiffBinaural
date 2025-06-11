@@ -1,6 +1,6 @@
 import torch
 import torchvision
-from .networks import Resnet, Clip, Clip_Pos
+from .networks import Resnet, Clip, Clip_Pos, Clip_Pos2D
 from .audioVisual_model import AudioVisualModel
 import clip
 
@@ -19,6 +19,9 @@ class ModelBuilder():
         elif arch_frame == 'clip_pos':
             model, _ = clip.load("ViT-B/32", device="cpu")
             net = Clip_Pos(model, pool_type=pool_type)
+        elif arch_frame == 'clip_pos2d':
+            model, _ = clip.load("ViT-B/32", device="cpu")
+            net = Clip_Pos2D(model, pool_type=pool_type)
 
         if len(weights) > 0:
             print('Loading weights for visual stream')
@@ -26,7 +29,7 @@ class ModelBuilder():
         return net
 
     #builder for audio stream
-    def build_unet(self, dim=64, input_nc=1, output_nc=1, weights=''):
+    def build_unet(self, dim=64, input_nc=2, output_nc=2, weights=''):
         net = AudioVisualModel(dim=dim, input_nc=input_nc, output_nc=output_nc)
         if len(weights) > 0:
             print('Loading weights for UNet')

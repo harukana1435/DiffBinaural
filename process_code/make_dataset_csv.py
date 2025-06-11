@@ -9,7 +9,7 @@ splits_dir = "/home/h-okano/DiffBinaural/FairPlay/splits"
 output_dir = "/home/h-okano/DiffBinaural/FairPlay/splits_csv"
 
 # 音声ファイルと関連するディレクトリのベースパス
-audio_base_path = "/home/h-okano/DiffBinaural/FairPlay/binaural_audios_16000Hz"
+audio_base_path = "/home/h-okano/DiffBinaural/FairPlay/binaural_audios_22050Hz"
 frames_base_path = "/home/h-okano/DiffBinaural/FairPlay/frames"
 mapping_base_path = "/home/h-okano/DiffBinaural/processed_data/3d_mapping_npz"
 

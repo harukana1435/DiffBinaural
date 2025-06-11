@@ -326,3 +326,114 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
         fouriered = torch.cat((freqs.sin(), freqs.cos()), dim = -1)
         fouriered = torch.cat((x, fouriered), dim = -1)
         return fouriered
+
+
+class Clip_Pos2D(nn.Module):
+    def __init__(self, model, pool_type='maxpool', dropout = 0.1):
+        super(Clip_Pos2D, self).__init__() # Corrected super call
+        self.pool_type = pool_type
+        self.model = model
+        self.max_sources = 4
+
+        self.emb_dim = 512 # Dimension of CLIP image features
+
+        #print(*list(model.children()))
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        # Sinusoidal embeddings for elevation and azimuth
+        self.pos_emb_dim = 64 # Dimension for each angle's sinusoidal embedding
+        self.pos_emb_ele = SinusoidalPosEmb(self.pos_emb_dim) # Elevation embedding
+        self.pos_emb_azi = SinusoidalPosEmb(self.pos_emb_dim) # Azimuth embedding
+
+        # Separate MLPs for scale (from elevation) and shift (from azimuth)
+        self.mlp_scale = nn.Sequential(
+            nn.Linear(self.pos_emb_dim, 512),
+            nn.GELU(),
+            nn.Linear(512, self.emb_dim) # Output 512 dims for scale
+        )
+        self.mlp_shift = nn.Sequential(
+            nn.Linear(self.pos_emb_dim, 512),
+            nn.GELU(),
+            nn.Linear(512, self.emb_dim) # Output 512 dims for shift
+        )
+
+        # Attention and feedforward layers for refining features after positional modulation
+        self.pos_attention = MaskedAttention(query_dim=self.emb_dim, heads=8, dim_head=64)
+        self.pos_layer1 = nn.LayerNorm(self.emb_dim)
+        self.pos_ff = PositionwiseFeedForward(self.emb_dim, self.emb_dim*4)
+        self.pos_layer2 = nn.LayerNorm(self.emb_dim)
+        self.pos_dropout = nn.Dropout(dropout)
+        
+        self.temporal_transformer_encoder = nn.TransformerEncoderLayer(
+            d_model=self.emb_dim,    # 埋め込み次元
+            nhead=8,                  # ヘッド数
+            dim_feedforward=2048,     # フィードフォワードネットワークのサイズ
+            batch_first=True          # バッチサイズが最初に来る場合
+        )
+            # encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8, batch_first=True)
+            # self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
+
+        # for param in self.temporal_transformer.parameters():
+        #     param.requires_grad = False
+
+    def forward(self, x, pool=True):
+        x = self.model.encode_image(x)
+
+        return x
+
+    def forward_text(self, x):
+        x = self.model.encode_text(x)
+        return x
+        
+    def forward_multiframe(self, x, pos, mask):
+        (B, C, T, N, H, W) = x.size()
+        x = x.permute(0, 2, 3, 1, 4, 5).contiguous()
+        x = x.view(B * T * N, C, H, W)
+        
+        x = self.model.encode_image(x)
+
+        (_, C) = x.size()
+        x = x.view(B*T, N, C) # x shape: (B*T, N, 512)
+
+        # --- Positional Embedding and Modulation ---
+        # Assuming pos shape is (B, T, N, 2) where pos[..., 0] is elevation, pos[..., 1] is azimuth
+        pos_ele = pos[..., 0] # Elevation (B, T, N)
+        pos_azi = pos[..., 1] # Azimuth (B, T, N)
+
+        # Apply sinusoidal embeddings
+        # Reshape angles to (B*T*N) before passing to embedding
+        emb_ele = self.pos_emb_ele(pos_ele.reshape(-1)) # (B*T*N, 64)
+        emb_azi = self.pos_emb_azi(pos_azi.reshape(-1)) # (B*T*N, 64)
+
+        # Calculate scale from elevation embedding and shift from azimuth embedding
+        scale_flat = self.mlp_scale(emb_ele) # (B*T*N, 512)
+        shift_flat = self.mlp_shift(emb_azi) # (B*T*N, 512)
+
+        # Reshape scale and shift to match x's dimensions for broadcasting
+        scale = scale_flat.view(B*T, N, self.emb_dim) # (B*T, N, 512)
+        shift = shift_flat.view(B*T, N, self.emb_dim) # (B*T, N, 512)
+
+        # Apply scale and shift to image features x
+        x = x * (scale + 1) + shift
+        # --- End Positional Embedding and Modulation ---
+
+        mask = mask.view(B*T, N)
+        # Apply attention mechanism using the modulated features
+        pos_attn = self.pos_attention(x, mask) #(B*T, N, 512)
+        x = x + self.pos_dropout(pos_attn)
+        x = self.pos_layer1(x)
+        ff_output = self.pos_ff(x)
+        x = x + self.pos_dropout(ff_output)
+        x = self.pos_layer2(x)
+        
+        x = torch.max(x, dim=1)[0] #(B*T, 512)
+        
+        x = x.view(B, T, 512)
+        
+        # transformer
+        x = self.temporal_transformer_encoder(x)
+        
+        x = torch.mean(x, dim=1) #(B, 512)
+
+        return x

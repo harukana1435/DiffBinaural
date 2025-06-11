@@ -39,17 +39,17 @@ class NetWrapper(torch.nn.Module):
         self.net_frame, self.net = nets
         self.sampler = diffusion_pytorch.GaussianDiffusion(
             self.net,
-            image_size = 64,
+            image_size = 80,
             timesteps = 1000,   # number of steps
             sampling_timesteps = 50, # if ddim else None
             loss_type = 'l1',    # L1 or L2
             objective = 'pred_noise', # pred_noise or pred_x0
             beta_schedule = 'cosine', #linear or cosine or sigmoid 64×64の画像なので、コサインとした
-            ddim_sampling_eta = 1.,
+            ddim_sampling_eta = 0,
             auto_normalize = False,
             min_snr_loss_weight=False
         )
-        self.scale_factor = 0.15
+        self.scale_factor = 0.167
 
     def move_to_device(self, device):
             """
@@ -71,70 +71,70 @@ class NetWrapper(torch.nn.Module):
 
     def forward(self, batch_data, args):
         mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
-        diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
-        frames = batch_data['frames'] #(B, L, C, H, W) L=4, C=3, H=224, W=224 
+        binaural_mel = batch_data['binaural_mel'] # (B, C, F, T) C=1, F=64, T=64
+        frames = batch_data['frames'] #(B, C, L, N, H, W) L=5, N=4, C=3, H=224, W=224 
         pos = batch_data['pos_data'] # (B, L, N, 3) 距離、仰角、方位角の順番
         mask = batch_data['mask'] #(B, L, N)
         
-        #print(mix_mel.shape, flush=True)
-
-        B = mix_mel.size(0)
-        T = mix_mel.size(2)
-
         if args.weighted_loss:
             weight = mix_mel
             # weight = torch.clamp(weight, 1e-3, 10)
-            weight = weight > 1e-3 #mixe_melの値が1e-3以上のものにweightをつけている
-        else: #こっち
+            weight = weight > 1e-3 # mix_melの値が1e-3以上のものにweightをつけている
+        else: # こっち
             weight = torch.ones_like(mix_mel)
 
         # LOG magnitude
-        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
-        log_diff_mel = torch.log1p(diff_mel) * self.scale_factor #正規化
+        #mix_mel = min_max_normalize(mix_mel, self.min, self.max)
+        #binaural_mel = min_max_normalize(binaural_mel, self.min, self.max) #正規化
+        
+        mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
+        binaural_mel = torch.log1p(binaural_mel) * self.scale_factor #正規化
 
         # detach
-        log_mix_mel = log_mix_mel.detach()
-        log_diff_mel = log_diff_mel.detach()
+        mix_mel = mix_mel.detach()
+        binaural_mel = binaural_mel.detach()
 
         # Frame feature (conditions)
         feat_frames = self.net_frame.forward_multiframe(frames, pos, mask) #(B, C)
         
         # Loss
-        loss_mel = 1e3*self.sampler(log_diff_mel, [log_mix_mel, feat_frames], log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
+        loss_mel = self.sampler(binaural_mel, [mix_mel, feat_frames], cfg=False, log=False, weight=weight) #weightは分離音声に対して、一定のスペクトログラムはオフにする
 
         return loss_mel
+
 
 
     def sample(self, batch_data, args): #サンプルのときは最後に、hifiganに入れられるように正規化しないといけないが、hifigan側でやったほうがいいかも
         model_device = next(self.net_frame.parameters()).device
         batch_data = _nested_map(batch_data, lambda x: x.to(model_device) if isinstance(x, torch.Tensor) else x)
-        mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=64, T=64
-        diff_mel = batch_data['diff_mel'] # (B, C, F, T) C=1, F=64, T=64
-        frames = batch_data['frames'] #(B, L, C, H, W) L=4, C=3, H=224, W=224 
+        mix_mel = batch_data['mix_mel'] # (B, C, F, T) C=1, F=80, T=80
+        binaural_mel = batch_data['binaural_mel'] # (B, C, F, T) C=2, F=80, T=80
+        frames = batch_data['frames'] #(B, L, C, H, W) L=4, C=3, H=224, W=224
         pos = batch_data['pos_data'] # (B, L, N, 3) 距離、仰角、方位角の順番
         mask = batch_data['mask'] #(B, L, N)
 
-        B = mix_mel.size(0)
-        T = mix_mel.size(2)
-
-        # LOG magnitude
-        log_mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
+        # magnitude
+        #mix_mel = min_max_normalize(mix_mel, self.min, self.max) #正規化
+        mix_mel = torch.log1p(mix_mel) * self.scale_factor #正規化
         
         # detach
-        log_mix_mel = log_mix_mel.detach()
+        mix_mel = mix_mel.detach()
+        binaural_mel = binaural_mel.detach()
         
         # Frame feature (conditions)
         feat_frames = self.net_frame.forward_multiframe(frames, pos, mask) #(B, C)
         
         # ddim sampling
-        preds = self.sampler.ddim_sample(condition=[log_mix_mel, feat_frames], return_all_timesteps = True)
+        preds = self.sampler.ddim_sample(condition=[mix_mel, feat_frames], return_all_timesteps = True, silence_mask_sampling=True)
 
         pred = preds[:, -1, ...]
-
+        
         pred = pred / self.scale_factor
-        pred_mag = torch.exp(pred.abs()) - 1
+        pred = torch.exp(pred.abs()) - 1
 
-        return {'pred_mag': pred_mag, 'gt_mag': diff_mel}
+        #pred = invert_min_max_normalize(pred, self.min, self.max)
+        
+        return {'pred_mag': pred, 'gt_mag': binaural_mel}
 
 def load_checkpoint(filepath, device):
     assert os.path.isfile(filepath)
@@ -159,8 +159,8 @@ def generate(netWrapper, loader, args):
             t=batch_data['total_time_frame'][0]
             m=args.num_mels
             device=next(netWrapper.module.net.parameters()).device
-            mel = torch.zeros((m, t)).to(device)
-            overlap_count = torch.zeros((m, t)).to(device)
+            mel = torch.zeros((2, m, t)).to(device)
+            overlap_count = torch.zeros((2, m, t)).to(device)
         
         # forward pass
         outputs = netWrapper.module.sample(batch_data, args)
@@ -169,8 +169,8 @@ def generate(netWrapper, loader, args):
 
         for j in range(B):
             start_frame = batch_data['start_time_frame'][j]
-            mel[:,start_frame:start_frame+args.num_mels] += outputs['pred_mag'][j].squeeze(0)
-            overlap_count[:,start_frame:start_frame+args.num_mels] += 1
+            mel[:, :,start_frame:start_frame+args.num_mels] += outputs['pred_mag'][j]
+            overlap_count[:, :,start_frame:start_frame+args.num_mels] += 1
     
     mel = torch.div(mel, overlap_count)
     
@@ -211,7 +211,8 @@ def main(args):
 
     filelist = get_audio_filelist(args.list_test)
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.output_dir_left, exist_ok=True)
+    os.makedirs(args.output_dir_right, exist_ok=True)
 
     netWrapper.eval()
     
@@ -223,10 +224,15 @@ def main(args):
             mel = generate(netWrapper, loader_audio, args)
             print(mel.shape)
             mel = mel.cpu()
+            
+            left_mel = mel[0].squeeze(0)
+            right_mel = mel[1].squeeze(0)
 
-            output_file = os.path.join(args.output_dir, os.path.splitext(os.path.split(filename)[1])[0] + '.npy')
-            torch.save(mel, output_file)
-            print(output_file)
+            output_file_left = os.path.join(args.output_dir_left, os.path.splitext(os.path.split(filename)[1])[0] + '.npy')
+            output_file_right = os.path.join(args.output_dir_right, os.path.splitext(os.path.split(filename)[1])[0] + '.npy')
+            torch.save(left_mel, output_file_left)
+            torch.save(right_mel, output_file_right)
+            print(output_file_right)
 
 
 if __name__ == '__main__':
@@ -240,8 +246,8 @@ if __name__ == '__main__':
     torch.cuda.set_device(args.gpu_ids[0])  # 明示的にデバイスを設定
     args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    args.weights_frame = os.path.join(args.ckpt, "frame_000250")
-    args.weights_unet = os.path.join(args.ckpt, "unet_000250")
+    args.weights_frame = os.path.join(args.ckpt, "frame_001000")
+    args.weights_unet = os.path.join(args.ckpt, "unet_001000")
     
     random.seed(args.seed)
     torch.manual_seed(args.seed)
